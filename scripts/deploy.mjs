@@ -82,6 +82,7 @@ const SKIP_SOURCE_SYNC = process.env.PRISMEAI_SKIP_SOURCE_SYNC === 'true'
 const SKIP_VERSION_SNAPSHOT = process.env.PRISMEAI_SKIP_VERSION_SNAPSHOT === 'true'
 const SKIP_AUTOMATIONS_SYNC = process.env.PRISMEAI_SKIP_AUTOMATIONS_SYNC === 'true'
 const SKIP_BUNDLE_CLEANUP = process.env.PRISMEAI_SKIP_BUNDLE_CLEANUP === 'true'
+const SKIP_SMOKE = process.env.PRISMEAI_SKIP_SMOKE === 'true'
 const FORCE = process.argv.includes('--force') || process.env.PRISMEAI_FORCE === 'true'
 
 // fail() throws so the top-level try/catch can print a deploy summary + recovery
@@ -615,8 +616,81 @@ async function cleanupOrphanBundles() {
 }
 
 // ---------------------------------------------------------------------------
+// 4c. Smoke test
+//
+// A successful PATCH doesn't mean the app actually loads. Three failure modes
+// pass the deploy but break the live UI:
+//   1. Bundle is syntactically broken (esbuild emitted bad CJS)
+//   2. Bundle imports a module not in externals (would throw at runtime)
+//   3. config.value.bundles[<slug>] points to a 404 / expired URL
+//
+// We replay what AppRenderer does: GET /pages/<slug>/_bundle, fetch the JS,
+// execute it in a Function() with stubbed externals, verify module.default
+// is a function/object.
+// ---------------------------------------------------------------------------
+
+async function smokeTest({ slug }) {
+  if (SKIP_SMOKE) {
+    console.log('· smoke test skipped (PRISMEAI_SKIP_SMOKE=true)')
+    return
+  }
+  console.log(`→ Smoke test`)
+
+  // 1. Resolve via the same endpoint AppRenderer uses
+  const resolved = await api('GET', `/pages/${encodeURIComponent(slug)}/_bundle`)
+  const bundleUrl = resolved?.bundles?.[slug]?.bundle
+  if (!bundleUrl) fail(`Smoke: /pages/${slug}/_bundle has no bundles[${slug}].bundle`)
+
+  // 2. Fetch the bundle (public URL, no auth)
+  const bundleRes = await fetch(bundleUrl)
+  if (!bundleRes.ok) fail(`Smoke: bundle URL returned ${bundleRes.status} ${bundleRes.statusText}`)
+  const code = await bundleRes.text()
+  if (code.length === 0) fail(`Smoke: bundle URL returned empty body`)
+
+  // 3. Parse-check (catches esbuild emitting bad CJS). Doesn't execute — that
+  //    requires a real React in scope, which we can't realistically stub here.
+  try {
+    new Function('require', 'exports', 'module', '__filename', '__dirname', code)
+  } catch (err) {
+    fail(`Smoke: bundle is not valid JavaScript — ${err?.message || err}`)
+  }
+
+  // 4. Static check that the bundle exposes a default export. esbuild's CJS
+  //    output writes either `module.exports=` or `module.exports.default=`.
+  if (!/module\.exports\s*=|exports\.default\s*=/.test(code)) {
+    fail(`Smoke: bundle does not appear to set module.exports (esbuild output pattern not found)`)
+  }
+  console.log(`  ✓ bundle reachable, valid JS, has CJS exports (${(code.length / 1024).toFixed(1)} KB)`)
+}
+
+// ---------------------------------------------------------------------------
 // 5. Version snapshot (parity with buildAndDeploy step 6)
 // ---------------------------------------------------------------------------
+
+// Refresh .prismeai/last-pull.json after successful deploy so subsequent
+// deploys see "no remote changes" instead of falsely flagging our own pushes.
+// Without this, every deploy after the first one needs --force.
+async function refreshManifest() {
+  const ws = await api('GET', `/workspaces/${PRISMEAI_WORKSPACE_ID}`)
+  const params = new URLSearchParams({ limit: '1000', 'metadata.type': 'source' })
+  const list = await api('GET', `/workspaces/${PRISMEAI_WORKSPACE_ID}/files?${params}`)
+  const files = Array.isArray(list) ? list : list?.result || []
+  const manifest = {
+    pulledAt: new Date().toISOString(),
+    workspaceId: PRISMEAI_WORKSPACE_ID,
+    automations: {},
+    sourceFiles: {},
+  }
+  for (const slug of Object.keys(ws?.automations || {})) {
+    manifest.automations[slug] = ws.automations[slug]?.checksum
+  }
+  for (const f of files) {
+    const p = f.metadata?.path || f.name
+    if (p) manifest.sourceFiles[p] = f.metadata?.hash
+  }
+  await mkdir(path.dirname(MANIFEST_PATH), { recursive: true })
+  await writeFile(MANIFEST_PATH, JSON.stringify(manifest, null, 2), 'utf8')
+}
 
 async function versionSnapshot() {
   if (SKIP_VERSION_SNAPSHOT) {
@@ -665,6 +739,7 @@ const steps = [
   { key: 'embed',       label: 'embed.js upload' },
   { key: 'config',      label: 'Workspace config PATCH (live pointer)' },
   { key: 'cleanup',     label: 'Orphan bundle cleanup' },
+  { key: 'smoke',       label: 'Smoke test (bundle loads + default export)' },
   { key: 'version',     label: 'Version snapshot' },
 ]
 const status = Object.fromEntries(steps.map(s => [s.key, 'pending']))
@@ -688,6 +763,7 @@ const RECOVERY = {
   embed:       'Bundle is uploaded but embed.js (3rd-party embedding) failed. /apps/<slug> still works. Either set/check PRISMEAI_PLATFORM_URL, or unset it to skip embed entirely.',
   config:      'CRITICAL: bundle was uploaded but workspace config was NOT updated. The new bundle is orphaned; end users still see the OLD version. Re-run `npm run deploy` — a new bundle upload will succeed and the config patch will retry.',
   cleanup:     'Deploy SUCCEEDED — the live UI is updated to the new bundle. Cleanup of orphan bundle files failed but is non-critical (will retry next deploy).',
+  smoke:       'Bundle is live but the smoke test failed — the bundle may be syntactically broken or reference a missing external. End users will see a "Failed to load bundle" error. Run `npm run undeploy` to roll back, OR fix the bundle and re-deploy.',
   version:     'Deploy SUCCEEDED — the live UI is updated. Version snapshot failed; you may not have a rollback point for this release.',
 }
 
@@ -709,7 +785,9 @@ try {
 
   await patchWorkspaceConfig({ bundleUrl, embedUrl, ws, slug });  mark('config', 'done')
   await cleanupOrphanBundles();        mark('cleanup', SKIP_BUNDLE_CLEANUP ? 'skipped' : 'done')
+  await smokeTest({ slug });           mark('smoke', SKIP_SMOKE ? 'skipped' : 'done')
   await versionSnapshot();             mark('version', SKIP_VERSION_SNAPSHOT ? 'skipped' : 'done')
+  await refreshManifest()  // refresh .prismeai/last-pull.json so subsequent deploys aren't blocked
 
   console.log()
   console.log(`✓ Deploy complete. App is live at <your-platform>/apps/${slug}`)

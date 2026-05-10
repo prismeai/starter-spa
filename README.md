@@ -191,7 +191,10 @@ The deploy script does eight steps in order:
 | 4 | **embed.js upload** | Fetches `${PRISMEAI_PLATFORM_URL}/embed.js` and uploads as a public file. Only needed for 3rd-party `<script>` embedding. | unset `PRISMEAI_PLATFORM_URL` |
 | 5 | **Patch workspace config** | `PATCH /workspaces/:id` writes `config.value.bundles[<slug>] = { bundle, embed?, version, name, builtAt }`. **This is the live pointer `AppRenderer` reads on every page load.** | — |
 | 6 | **Cleanup orphan bundles** | Lists all public `bundle.js` / `embed.js` files; deletes any not currently referenced in `bundles[*]`. Stops storage growth. | `PRISMEAI_SKIP_BUNDLE_CLEANUP=true` |
-| 7 | **Version snapshot** | `POST /workspaces/:id/versions` creates a Prisme.ai workspace version. | `PRISMEAI_SKIP_VERSION_SNAPSHOT=true` |
+| 7 | **Smoke test** | Resolves `/pages/<slug>/_bundle`, fetches the bundle JS, parse-checks via `new Function(...)`, verifies the CJS exports pattern is present. Catches "deploy succeeded but bundle is broken". | `PRISMEAI_SKIP_SMOKE=true` |
+| 8 | **Version snapshot** | `POST /workspaces/:id/versions` creates a Prisme.ai workspace version. | `PRISMEAI_SKIP_VERSION_SNAPSHOT=true` |
+
+After successful deploy, the script also refreshes `.prismeai/last-pull.json` with the current workspace state so the next deploy doesn't trip conflict detection on changes you just pushed.
 
 After deploy, hard-reload your browser to bypass any cached bundle.
 
@@ -232,7 +235,8 @@ All `.env*` files except `.env.example` are gitignored.
 | `PRISMEAI_SKIP_AUTOMATIONS_SYNC` | no | `true` to skip step 1 |
 | `PRISMEAI_SKIP_SOURCE_SYNC` | no | `true` to skip step 2 |
 | `PRISMEAI_SKIP_BUNDLE_CLEANUP` | no | `true` to skip step 6 |
-| `PRISMEAI_SKIP_VERSION_SNAPSHOT` | no | `true` to skip step 7 |
+| `PRISMEAI_SKIP_SMOKE` | no | `true` to skip step 7 |
+| `PRISMEAI_SKIP_VERSION_SNAPSHOT` | no | `true` to skip step 8 |
 
 ---
 
