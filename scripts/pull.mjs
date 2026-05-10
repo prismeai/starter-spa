@@ -54,8 +54,36 @@ const AUTH_HEADERS = PRISMEAI_ACCESS_TOKEN
   ? { Authorization: `Bearer ${PRISMEAI_ACCESS_TOKEN}` }
   : { 'x-prismeai-api-key': PRISMEAI_API_KEY }
 
+// HTTP timeout + retry — same policy as deploy.mjs (kept inline so the script
+// stays standalone; if a third script appears, factor out to scripts/lib/).
+const HTTP_TIMEOUT_MS = parseInt(process.env.PRISMEAI_HTTP_TIMEOUT || '30000', 10)
+const HTTP_MAX_RETRIES = parseInt(process.env.PRISMEAI_HTTP_RETRIES || '3', 10)
+
+async function fetchWithRetry(url, init = {}) {
+  let lastError = ''
+  for (let attempt = 0; attempt <= HTTP_MAX_RETRIES; attempt++) {
+    if (attempt > 0) {
+      const waitMs = 1000 * Math.pow(2, attempt - 1)
+      console.warn(`  ↻ retry ${attempt}/${HTTP_MAX_RETRIES} for ${init.method || 'GET'} ${url} after ${waitMs}ms (last: ${lastError})`)
+      await new Promise(r => setTimeout(r, waitMs))
+    }
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(), HTTP_TIMEOUT_MS)
+    try {
+      const res = await fetch(url, { ...init, signal: controller.signal })
+      clearTimeout(timer)
+      if (res.status >= 500) { lastError = `${res.status} ${res.statusText}`; continue }
+      return res
+    } catch (err) {
+      clearTimeout(timer)
+      lastError = err?.name === 'AbortError' ? `timeout after ${HTTP_TIMEOUT_MS}ms` : (err?.message || String(err))
+    }
+  }
+  fail(`${init.method || 'GET'} ${url} failed after ${HTTP_MAX_RETRIES + 1} attempts: ${lastError}`)
+}
+
 async function api(method, pathSuffix) {
-  const res = await fetch(`${API_BASE}${pathSuffix}`, { method, headers: AUTH_HEADERS })
+  const res = await fetchWithRetry(`${API_BASE}${pathSuffix}`, { method, headers: AUTH_HEADERS })
   if (!res.ok) fail(`${method} ${pathSuffix} → ${res.status} ${res.statusText}\n${await res.text().catch(() => '')}`)
   if (res.status === 204) return null
   const ct = res.headers.get('content-type') || ''
@@ -63,7 +91,7 @@ async function api(method, pathSuffix) {
 }
 
 async function fetchText(url) {
-  const res = await fetch(url, { headers: AUTH_HEADERS })
+  const res = await fetchWithRetry(url, { headers: AUTH_HEADERS })
   if (!res.ok) fail(`GET ${url} → ${res.status}`)
   return res.text()
 }

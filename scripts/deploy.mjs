@@ -73,24 +73,57 @@ const AUTH_HEADERS = PRISMEAI_ACCESS_TOKEN
   ? { Authorization: `Bearer ${PRISMEAI_ACCESS_TOKEN}` }
   : { 'x-prismeai-api-key': PRISMEAI_API_KEY }
 
+// HTTP timeout (default 30s) + retry on 5xx/network errors with exponential
+// backoff. 4xx are deterministic client errors and never retried.
+const HTTP_TIMEOUT_MS = parseInt(process.env.PRISMEAI_HTTP_TIMEOUT || '30000', 10)
+const HTTP_MAX_RETRIES = parseInt(process.env.PRISMEAI_HTTP_RETRIES || '3', 10)
+
 async function api(method, pathSuffix, { body, headers, raw } = {}) {
-  const res = await fetch(`${API_BASE}${pathSuffix}`, {
-    method,
-    headers: {
-      ...AUTH_HEADERS,
-      ...(body && !(body instanceof FormData) ? { 'Content-Type': 'application/json' } : {}),
-      ...headers,
-    },
-    body: body instanceof FormData ? body : body ? JSON.stringify(body) : undefined,
-  })
-  if (!res.ok) {
-    const text = await res.text().catch(() => '')
-    fail(`${method} ${pathSuffix} → ${res.status} ${res.statusText}\n${text}`)
+  let lastError = ''
+  for (let attempt = 0; attempt <= HTTP_MAX_RETRIES; attempt++) {
+    if (attempt > 0) {
+      const waitMs = 1000 * Math.pow(2, attempt - 1) // 1s, 2s, 4s, ...
+      console.warn(`  ↻ retry ${attempt}/${HTTP_MAX_RETRIES} for ${method} ${pathSuffix} after ${waitMs}ms (last: ${lastError})`)
+      await new Promise(r => setTimeout(r, waitMs))
+    }
+
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(), HTTP_TIMEOUT_MS)
+
+    try {
+      const res = await fetch(`${API_BASE}${pathSuffix}`, {
+        method,
+        headers: {
+          ...AUTH_HEADERS,
+          ...(body && !(body instanceof FormData) ? { 'Content-Type': 'application/json' } : {}),
+          ...headers,
+        },
+        body: body instanceof FormData ? body : body ? JSON.stringify(body) : undefined,
+        signal: controller.signal,
+      })
+      clearTimeout(timer)
+
+      // 4xx — deterministic, fail fast
+      if (res.status >= 400 && res.status < 500) {
+        const text = await res.text().catch(() => '')
+        fail(`${method} ${pathSuffix} → ${res.status} ${res.statusText}\n${text}`)
+      }
+      // 5xx — transient, retry
+      if (res.status >= 500) {
+        lastError = `${res.status} ${res.statusText}`
+        continue
+      }
+      // 2xx
+      if (res.status === 204) return null
+      if (raw) return res
+      const ct = res.headers.get('content-type') || ''
+      return ct.includes('application/json') ? res.json() : res.text()
+    } catch (err) {
+      clearTimeout(timer)
+      lastError = err?.name === 'AbortError' ? `timeout after ${HTTP_TIMEOUT_MS}ms` : (err?.message || String(err))
+    }
   }
-  if (res.status === 204) return null
-  if (raw) return res
-  const ct = res.headers.get('content-type') || ''
-  return ct.includes('application/json') ? res.json() : res.text()
+  fail(`${method} ${pathSuffix} failed after ${HTTP_MAX_RETRIES + 1} attempts: ${lastError}`)
 }
 
 function sha256(content) {
