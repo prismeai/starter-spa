@@ -1,95 +1,44 @@
 # TODO — road to production-ready v1
 
-Tracks gaps between v0.1 (current) and a starter customers can confidently ship to production.
+Tracks gaps between today's published starter and a v1.0 release.
 
 Each item has: **Why** (real risk it addresses), **Symptoms** (what goes wrong without it), **Approach** (rough plan).
 
 ---
 
-## P0 — Production blockers
+## v0.1 — shipped
 
-These cause silent data loss, security exposure, or unrecoverable inconsistency. Customers will hit them.
+All 6 P0 + 6 P1 items shipped (see commits). Repo is on GitHub at `prismeai/starter-spa`.
 
-### 1. `npm run pull` — pull workspace edits → local ✅ partially done (v0.1)
+### P0 (production blockers, all ✅)
 
-- **Why**: Today the deploy script silently overwrites Builder edits because there's no way to fetch them first. The README's Hybrid mode is undocumentable without it.
-- **Symptoms**: Teammate edits in Builder → developer runs `npm run deploy` → teammate's work is gone, no warning.
-- **Approach**: Mirror `syncFilesToWorkspace` in reverse — `GET /workspaces/:id/files?metadata.type=source`, fetch each `.url`, write to local `metadata.path`. Print summary `pulled=X new=Y modified=Z`. Refuse to overwrite locally-modified files (compare against last-pull manifest in `.prismeai/last-pull.json`).
-- **Status v0.1**: Pull script exists (`scripts/pull.mjs`), covers automations + source files, writes manifest. **NOT done**: locally-modified detection (overwrites unconditionally — manifest is written but not enforced).
+| # | Item | Notes |
+|---|---|---|
+| 1 | `npm run pull` script | Pulls automations + source files; writes `.prismeai/last-pull.json` manifest. Used by conflict detection. |
+| 2 | Conflict detection on deploy | Refuses if remote diverged from manifest; `--force` / `PRISMEAI_FORCE=true` opts out. Manifest auto-refreshed after successful deploy. |
+| 3 | HTTP timeouts + retries | 30s timeout, 3 retries on 5xx with backoff, fail fast on 4xx. Configurable via env. |
+| 4 | Partial-failure summary | 8-step status tracker, per-step recovery guidance on failure, atomic boundary documented (step 5 = config patch = live pointer swap). |
+| 5 | Bundle file accumulation cleanup | Step 6 deletes orphan `bundle.js` / `embed.js` files not in current `bundles[*]`. |
+| 6 | Secret hygiene | Deploy warns if `.env` is git-tracked; README documents per-OS keychain integration. |
 
-### 2. Conflict detection on deploy ✅ done (v0.1)
+### P1 (needed for production, all ✅)
 
-- **Why**: Without it, `npm run deploy` is a destructive operation that pretends to be additive.
-- **Symptoms**: Two devs (or dev + Builder user) make concurrent changes; whoever deploys second wins, no record of the loss.
-- **Status v0.1**: Pre-flight in `deploy.mjs` reads `.prismeai/last-pull.json` and compares the server's `metadata.hash` (source files) and `checksum` (automations) against the manifest. Refuses on divergence with a list of conflicting items + 3 resolution paths. Override: `--force` flag on `deploy` directly OR `PRISMEAI_FORCE=true` env var (works for `release` too). Exit code 1 on refusal — CI-safe.
-- **Verified**: 4 test scenarios — no manifest skipped silently; clean pull + deploy passes; remote PATCH detected and refused; --force overrides.
+| # | Item | Notes |
+|---|---|---|
+| 7 | Multi-environment support | `--env=<name>` or `PRISMEAI_ENV=<name>` picks `.env.<name>`. Falls back to `.env`. |
+| 8 | CI/CD recipes | `.github/workflows/deploy.yml` + `.gitlab-ci.yml` shipped. README documents secrets setup. |
+| 9 | Smoke test after deploy | Step 7: parse-checks bundle + verifies CJS exports pattern. Doesn't execute (browser-only). |
+| 10 | Bundle size guard | Warn at 500 KB, fail at 2 MB. Configurable. |
+| 11 | `npm run undeploy` | Removes `bundles[<slug>]` from workspace config. Idempotent. `--purge-files` to also delete artifacts. |
+| 12 | Type sharing | `AppProps` lives in `src/types.ts`; both `App.tsx` and `mockHost.ts` import from there. |
 
-### 3. HTTP timeouts + retries
+### Other shipped
 
-- **Why**: Native `fetch` waits forever. A flaky network or hung gateway will hang `npm run deploy` indefinitely with no signal.
-- **Symptoms**: CI job stuck for hours; developer sees the script "running" but nothing happens.
-- **Approach**: Wrap `api()` with `AbortController` (default 30s), retry 5xx/network errors up to 3× with exponential backoff. Treat 4xx as fatal (no retry).
-
-### 4. Partial-failure atomicity
-
-- **Why**: Steps run sequentially with no rollback. If the bundle uploads but config patch fails, the workspace lists a phantom bundle URL pointing to nothing the AppRenderer references. If config patches but version snapshot fails, the bundle is live without a recovery point.
-- **Symptoms**: Deploy "succeeds halfway"; subsequent re-runs accumulate orphan files; rollback impossible.
-- **Approach**: Two-phase commit pattern — stage all uploads first (collect URLs without touching config), then do the config PATCH last as the atomic swap. On any failure before PATCH, delete the staged files. On PATCH failure, keep staged files (next deploy can reuse).
-
-### 5. Bundle file accumulation cleanup ✅ done (v0.1)
-
-- **Why**: Each deploy uploads `<random>.bundle.js` and old ones stay forever. Workspace storage grows unbounded.
-- **Symptoms**: After 100 deploys, the workspace has 100 dead bundle files. Hits storage limits or makes file-list slow.
-- **Status v0.1**: Step 4b in `deploy.mjs` runs after config PATCH. Lists all public `bundle.js` / `embed.js` files; deletes any not in current `bundles[*]`. Skip flag: `PRISMEAI_SKIP_BUNDLE_CLEANUP=true`.
-
-### 6. Secret hygiene ✅ done (v0.1)
-
-- **Why**: `PRISMEAI_ACCESS_TOKEN` in plaintext `.env` is fine for local dev but invites mistakes (committed to git, posted in support tickets, copied to other machines).
-- **Symptoms**: Token leaks; developer can't rotate easily because the token is in too many places.
-- **Status v0.1**: deploy.mjs runs `git ls-files --error-unmatch .env` at start; warns loudly if tracked. README "Secret hygiene" section documents keychain integration (macOS `security`, Linux `secret-tool`, Windows `cmdkey`) and CI secrets pattern.
-- **Future** (P2 #13): `prisme login` CLI for OIDC device-flow auth — eliminates plaintext tokens entirely.
-
----
-
-## P1 — Needed before customers ship to production
-
-These don't cause data loss but they break common workflows.
-
-### 7. Multi-environment support
-
-- **Why**: One `.env` means dev/staging/prod are mutually exclusive. Customers need to deploy the same code to multiple workspaces.
-- **Symptoms**: Customer copies `.env` repeatedly between machines; accidental prod-deploys from dev branches.
-- **Approach**: Support `.env.development`, `.env.staging`, `.env.production`. `npm run deploy --env=staging` selects the file. Default to `.env`. Document that per-env files are gitignored.
-
-### 8. CI/CD recipes
-
-- **Why**: Customers will want to deploy on `git push`. We promised this in "Going further" but ship nothing.
-- **Symptoms**: Customer hand-rolls a brittle workflow that exposes the token in logs.
-- **Approach**: Two example files — `.github/workflows/deploy.yml` and `.gitlab-ci.yml`. Each: install Node, `npm ci`, `npm run release`, with the token from repo secrets. Pin Node version. Cache npm.
-
-### 9. Smoke test after deploy
-
-- **Why**: A successful PATCH doesn't mean the app actually loads. Bundle could be syntactically broken, externals could mismatch, or the `bundles[<slug>]` lookup could fail.
-- **Symptoms**: Deploy says ✓ but `/apps/<slug>` shows a blank screen or "Failed to load bundle". Customer doesn't notice until end users complain.
-- **Approach**: After step 5, fetch `GET /v2/pages/<slug>/_bundle`, parse the response, fetch the bundle URL, run `new Function(bundle)(...stub require...)` to verify it parses and exposes `module.default`. Print ✓/✗ summary. Optional `--no-smoke` flag.
-
-### 10. Bundle size guard
-
-- **Why**: Bundles over a few MB load slowly and break mobile clients. Today nothing catches a customer accidentally bundling a 10 MB blob.
-- **Symptoms**: App loads slow on first visit; mobile users see timeouts.
-- **Approach**: After build, check `dist/bundle.js` size. Warn at 500 KB, fail at 2 MB by default. Configurable in `prismeai.config.json`.
-
-### 11. `npm run undeploy`
-
-- **Why**: No way to remove a deployed app. Deleting the workspace deletes everything; there's no "just remove the bundle pointer".
-- **Symptoms**: Stale apps linger in the workspace's `bundles[]` map; `/apps/<slug>` keeps serving an old version.
-- **Approach**: Script that `GET`s the workspace, removes `bundles[<slug>]` from `config.value`, PATCHes back. Optional `--purge-files` to also delete the underlying file artifacts.
-
-### 12. Type sharing — extract `AppProps`
-
-- **Why**: `AppProps` is duplicated in `src/App.tsx` and `src/lib/mockHost.ts`. Drift will silently break the mock.
-- **Symptoms**: Adding a prop in `App.tsx` doesn't update mock; dev-mode renders with wrong shape; customer ships a regression they can't see locally.
-- **Approach**: Move to `src/types.ts`. Both files import from there. Bonus: export the contract version so mismatches with the platform's `AppProps` type can be detected.
+- `automations/` with demo YAMLs (matches the React app calls)
+- Auto-push of automations in deploy
+- `AGENTS.md` (canonical) + `CLAUDE.md` + `.cursorrules` for AI agents
+- README rewritten customer-facing (no dev history)
+- Two-channel transport documented (DSUL via zip, React via git+npm)
 
 ---
 
@@ -127,12 +76,7 @@ Not blockers, but every customer will want these.
 - **Why**: Small DX wins (debug TSX, format on save with Prettier).
 - **Approach**: Already shipped `.vscode/extensions.json` and `settings.json`. Add `launch.json` for "Debug current file" and "Run npm run deploy".
 
-### 19. Real-workspace dev mode
-
-- **Why**: `mockHost.ts` only echoes a few events. Customers need to point their local `npm run dev` at a real workspace's WebSocket.
-- **Approach**: If `VITE_PRISMEAI_API_URL` and `VITE_PRISMEAI_ACCESS_TOKEN` are set, `mockHost.ts` builds a real SDK via `new PrismeSDK.Api()` instead of stubs. Documented as the "advanced dev" path.
-
-### 20. Better deploy progress
+### 19. Better deploy progress
 
 - **Why**: `uploaded=22 skipped=0 deleted=0` is fine for 22 files; useless for 200. No per-file progress.
 - **Approach**: Print one line per upload with elapsed time. Concurrent uploads with a small pool (5-10) — sequential is wasteful.
@@ -183,78 +127,57 @@ Not blockers, but every customer will want these.
 
 ---
 
-## Added in v0.2 design pass — automations + collaboration
+## Workspace round-trip — DSUL artifact support
 
-### 29. Ship `automations/` with demo YAMLs ✅ done
+### 32. `index.yml` push/pull (workspace metadata)
 
-- Two automations ship: `on-app-greeting-requested` (matches the Events tab) and `v1/status` (matches the API tab). Marked `# DELETE ME — example` at top.
+- **Why**: Customer may want to version workspace name, labels, `config.value` (except `bundles`, which deploy manages).
+- **Approach**: If `index.yml` exists at root, PATCH `/workspaces/:id` with the parsed YAML, stripping `config.value.bundles` to avoid clobbering deploy's writes. Pull script writes it on demand.
 
-### 30. Extend `deploy.mjs` to push automations ✅ done
-
-- New step 0 in deploy: walks `automations/`, diffs against workspace, upserts/deletes via `/v2/workspaces/:id/automations[/:slug]`. Uses `js-yaml` for parse + `JSON.stringify` with sorted keys for stable hashing.
-- Skip flag: `PRISMEAI_SKIP_AUTOMATIONS_SYNC=true`.
-
-### 31. `npm run pull` script ✅ done (see P0 #1)
-
-### 32. Refactor mockHost.ts → host.ts (real-mode driven by env vars)
-
-- **Why**: Today local dev mocks `streamEvents` with a 400ms echo. Customer thinks events work, ships, finds the real workspace doesn't have the matching automation.
-- **Approach**: When `VITE_PRISMEAI_API_URL`, `VITE_PRISMEAI_ACCESS_TOKEN`, `VITE_PRISMEAI_WORKSPACE_ID` are set, build a real SDK shim that hits the workspace. Falls back to mock with warning if not set. Document hostname-alias trick if WebSocket origin restrictions hit.
-- **Status**: NOT done. Mock host still echoes locally only.
-
-### 33. `src/lib/prismeClient.ts` — minimal hand-rolled SDK
-
-- **Why**: `@prisme.ai/sdk` is not on public npm. Customers can't install it.
-- **Approach**: Tiny shim — REST via `fetch` + Bearer token; WebSocket via `socket.io-client` with token in `auth` handshake. Just enough surface for `streamEvents`, `webhookUrl`, `host`, `token`, `_csrfToken`.
-- **Status**: NOT done. Goes hand-in-hand with #32.
-
-### 34. Optional support for `index.yml at root` (workspace metadata patch)
-
-- **Why**: Customer may want to version workspace name, slug, labels, config.value (excluding `bundles` which deploy manages).
-- **Approach**: If `index.yml at root` exists, PATCH `/workspaces/:id` with the parsed YAML, but always strip `config.value.bundles` first to avoid clobbering deploy's own writes.
-- **Status**: NOT done. Pull does not yet write index.yml either.
-
-### 35. Optional support for `security.yml at root` (RBAC)
+### 33. `security.yml` push/pull (RBAC)
 
 - **Why**: Some customers will want RBAC under git.
-- **Approach**: If `security.yml at root` exists, push via the workspace security endpoint. Pull writes it on demand. **Risky**: bad RBAC locks the customer out of their own workspace.
-- **Status**: NOT done. Need to verify the right endpoint and document the risk.
+- **Approach**: PUT to the workspace security endpoint. **Risky** — bad RBAC can lock the customer out of their own workspace. Add a confirmation prompt or `--apply-security` opt-in flag.
 
-### 36. Optional support for `imports/ at root` (installed app instances)
+### 34. `imports/` push/pull (installed app instances)
 
-- **Why**: Workspaces can install apps from the AppStore; their config (`imports[<slug>]`) is part of the DSUL.
-- **Approach**: Walk `imports/ at root**/*.yml`, diff against workspace.imports, upsert/delete.
-- **Status**: NOT done.
-
-### 37. AGENTS.md / CLAUDE.md / .cursorrules ✅ done
-
-- AGENTS.md is canonical (used by codex, gemini, others). CLAUDE.md and .cursorrules are one-line pointers to it.
-
-### 38. Document hostname alias trick
-
-- **Why**: Browser WebSocket from `localhost` may be blocked by CORS or cookie-domain mismatches when hitting the real workspace.
-- **Approach**: README section showing `/etc/hosts` alias setup + `vite --host app.local.example.com` usage.
-- **Status**: NOT done.
-
-### 39. DSUL conventions doc
-
-- **Why**: Customers writing automations need a primer on DSUL syntax (`when`, `do`, `output`, `{{...}}` expressions).
-- **Approach**: Link to public docs OR embed key bits inline. Avoid duplicating the full DSUL spec.
-- **Status**: NOT done.
+- **Why**: Workspaces can install apps from the AppStore; the config lives in `imports[<slug>]`.
+- **Approach**: Walk `imports/**/*.yml`, diff against `workspace.imports`, upsert/delete.
 
 ---
 
-## Doc / repo polish (small but visible)
+## Local dev parity
 
-- [ ] LICENSE file (currently only mentioned in README)
-- [ ] CHANGELOG.md
+### 35. Real-host upgrade in `mockHost.ts`
+
+- **Why**: Today local dev mocks `streamEvents` with a 400ms echo. Customer ships, finds the real workspace doesn't have the matching automation.
+- **Approach**: When `VITE_PRISMEAI_API_URL`, `VITE_PRISMEAI_ACCESS_TOKEN`, `VITE_PRISMEAI_WORKSPACE_ID` are set, build a real SDK shim that hits the workspace. Falls back to mock with warning. Document hostname-alias trick if WebSocket origin restrictions hit.
+
+### 36. `src/lib/prismeClient.ts` — minimal hand-rolled SDK
+
+- **Why**: `@prisme.ai/sdk` is not on public npm.
+- **Approach**: Tiny shim — REST via `fetch` + Bearer token; WebSocket via `socket.io-client` with token in `auth` handshake. Just enough surface for `streamEvents`, `webhookUrl`, `host`, `token`, `_csrfToken`. Pairs with #35.
+
+### 37. Document hostname alias trick
+
+- **Why**: Browser WebSocket from `localhost` may be blocked by CORS or cookie-domain mismatches.
+- **Approach**: README section showing `/etc/hosts` alias setup + `vite --host app.local.example.com`.
+
+---
+
+## Doc / repo polish
+
+- [ ] **LICENSE file** (README mentions MIT but no `LICENSE` in the repo)
+- [ ] **CHANGELOG.md** (per-release notes; first entry: v0.1)
 - [ ] CONTRIBUTING.md (for the starter itself, not the customer's app)
 - [ ] CODE_OF_CONDUCT.md (boilerplate)
 - [ ] Issue templates (.github/ISSUE_TEMPLATE/)
 - [ ] PR template
 - [ ] Architecture diagram in README (mermaid or SVG)
 - [ ] Add `engines: { "node": ">=20" }` to package.json
-- [ ] Move duplicated `AppProps` to `src/types.ts` (also in P1 #12)
+- [ ] DSUL conventions primer (link to public docs OR embed key bits inline)
+- [ ] GitHub repo: add topics (`prisme-ai`, `starter`, `react`, `vite`, `low-code`, `automation`)
+- [ ] GitHub repo: pin to org page
 
 ---
 
@@ -262,6 +185,5 @@ Not blockers, but every customer will want these.
 
 - Keep the starter **minimal**. Every script + config we add is something the customer must understand or remove.
 - Prefer **opt-in** flags over default behavior changes. Don't surprise existing users on upgrade.
-- All P0 items are required before tagging `v1.0`.
-- P1 items can ship in `v1.1` if customers ask for them.
-- P2/P3 items are good for iterative improvement.
+- v0.2 milestone: `prisme login` CLI + workspace round-trip (index/security/imports) + real-host dev mode.
+- v0.3 milestone: ESLint + Vitest + watch mode + bundle analyzer.
