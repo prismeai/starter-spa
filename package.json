@@ -9,6 +9,7 @@
     "build": "node scripts/build.mjs",
     "deploy": "node scripts/deploy.mjs",
     "pull": "node scripts/pull.mjs",
+    "undeploy": "node scripts/undeploy.mjs",
     "release": "npm run build && npm run deploy",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit"

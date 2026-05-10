@@ -236,6 +236,18 @@ All `.env*` files except `.env.example` are gitignored.
 
 ---
 
+## Undeploy
+
+```bash
+npm run undeploy                  # remove bundles[<workspace.slug>] from workspace config
+npm run undeploy -- --slug=foo    # remove bundles[foo] (different key)
+npm run undeploy -- --purge-files # also DELETE the underlying bundle/embed files
+```
+
+Inverse of step 5. Removes the live pointer so `/apps/<slug>` no longer serves a bundle. Source files and automations are left intact (they may be shared across multiple bundles or you may want to keep them for re-deploy). Without `--purge-files`, the bundle artifacts stay in workspace storage — next `npm run deploy` will clean them up via step 6.
+
+Idempotent: running on a workspace that has no `bundles[<slug>]` is a noop.
+
 ## Pull workspace state
 
 ```bash
