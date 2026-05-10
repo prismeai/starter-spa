@@ -21,39 +21,9 @@ import {
   ActivityIcon,
 } from 'lucide-react'
 
-// ---------------------------------------------------------------------------
-// Host contract — these props are injected by the Prisme.ai platform at runtime.
-// In `npm run dev`, src/main.tsx provides a stubbed version (see src/lib/mockHost.ts).
-// ---------------------------------------------------------------------------
-
-interface PrismeEvent {
-  type: string
-  payload?: { [key: string]: unknown }
-}
-
-interface Events {
-  on(event: string, cb: (data: PrismeEvent) => void): () => void
-  emit(event: string, payload?: Record<string, unknown>): void
-  close(): void
-}
-
-interface SDK {
-  host?: string
-  token?: string
-  _csrfToken?: string
-  streamEvents(workspaceId: string, filters?: Record<string, unknown>): Promise<Events>
-}
-
-interface BackendConfig {
-  slug: string
-}
-
-export interface AppProps {
-  sdk: SDK
-  user: unknown
-  workspace: { id: string; slug: string; name: string }
-  backends?: Record<string, BackendConfig>
-}
+// Host contract — props the platform injects. See src/types.ts for the canonical shape.
+import type { AppProps, Events, PrismeEvent, SDK } from '@/types'
+export type { AppProps }
 
 // ---------------------------------------------------------------------------
 // Helpers

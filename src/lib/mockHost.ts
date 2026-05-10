@@ -9,7 +9,7 @@
  * VITE_PRISME_API_KEY at a real workspace (uses fetch directly, no SDK needed).
  */
 
-import type { AppProps } from '@/App'
+import type { AppProps } from '@/types'
 
 type Listener = (event: { type: string; payload?: Record<string, unknown> }) => void
 
