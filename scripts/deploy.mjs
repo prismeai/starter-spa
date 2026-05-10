@@ -32,8 +32,9 @@
  *   PRISMEAI_SKIP_VERSION_SNAPSHOT 'true' to skip step 5
  */
 
-import 'dotenv/config'
+import dotenv from 'dotenv'
 import { readFile, readdir, stat, writeFile, mkdir } from 'node:fs/promises'
+import { existsSync } from 'node:fs'
 import { createHash } from 'node:crypto'
 import { execSync } from 'node:child_process'
 import path from 'node:path'
@@ -43,6 +44,31 @@ import yaml from 'js-yaml'
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const ROOT = path.resolve(__dirname, '..')
 const BUNDLE_PATH = path.join(ROOT, 'dist/bundle.js')
+
+// Multi-env: pick .env.<name> if --env=<name> or PRISMEAI_ENV is set, else .env.
+// Print which file we loaded so you never accidentally deploy to prod thinking
+// you're on dev.
+function loadEnv() {
+  const argEnv = process.argv.find(a => a.startsWith('--env='))?.slice(6)
+  const envName = argEnv || process.env.PRISMEAI_ENV || ''
+  const candidates = envName ? [`.env.${envName}`] : ['.env']
+  for (const rel of candidates) {
+    const abs = path.join(ROOT, rel)
+    if (existsSync(abs)) {
+      dotenv.config({ path: abs })
+      console.log(`· using ${rel}${envName ? ` (env=${envName})` : ''}`)
+      return rel
+    }
+  }
+  if (envName) {
+    console.error(`✗ Env file not found: .env.${envName}`)
+    process.exit(1)
+  }
+  // No .env at all — env vars must come from the shell/CI
+  console.log('· no .env file (env vars must come from shell/CI)')
+  return null
+}
+loadEnv()
 
 const {
   PRISMEAI_API_URL,

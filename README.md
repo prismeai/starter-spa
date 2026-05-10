@@ -197,6 +197,22 @@ After deploy, hard-reload your browser to bypass any cached bundle.
 
 If a step fails mid-deploy, the script prints a structured summary and per-step recovery guidance — what completed, what failed, what to do next. The atomic boundary is step 5: failures BEFORE it leave the live UI on the previous version (safe to retry); failures AFTER mean deploy succeeded but a side-effect failed (also safe).
 
+### Multi-environment
+
+Use one `.env` file per environment. The deploy and pull scripts pick the right one via `--env=<name>` flag or `PRISMEAI_ENV=<name>` env var:
+
+```
+.env                  # default (used when no --env or PRISMEAI_ENV)
+.env.staging          # used by `npm run deploy -- --env=staging`
+.env.production       # used by `PRISMEAI_ENV=production npm run release`
+```
+
+Each file should hold its own `PRISMEAI_API_URL`, `PRISMEAI_WORKSPACE_ID`, and `PRISMEAI_ACCESS_TOKEN` (you don't want sandbox credentials on a prod workspace).
+
+The script prints which file it loaded at start (`· using .env.staging (env=staging)`) so you can't accidentally push dev code to prod.
+
+All `.env*` files except `.env.example` are gitignored.
+
 ### Environment variables
 
 | Var | Required | Purpose |

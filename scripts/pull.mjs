@@ -22,8 +22,9 @@
  *   changes first, then `git diff` after pull to review what was fetched.
  */
 
-import 'dotenv/config'
+import dotenv from 'dotenv'
 import { readFile, writeFile, mkdir, stat } from 'node:fs/promises'
+import { existsSync } from 'node:fs'
 import { createHash } from 'node:crypto'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -32,6 +33,24 @@ import yaml from 'js-yaml'
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const ROOT = path.resolve(__dirname, '..')
 const AUTOMATIONS_DIR = path.join(ROOT, 'automations')
+
+// Multi-env: same logic as deploy.mjs — pick .env.<name> if --env=<name> or
+// PRISMEAI_ENV is set, else .env.
+function loadEnv() {
+  const argEnv = process.argv.find(a => a.startsWith('--env='))?.slice(6)
+  const envName = argEnv || process.env.PRISMEAI_ENV || ''
+  const candidates = envName ? [`.env.${envName}`] : ['.env']
+  for (const rel of candidates) {
+    const abs = path.join(ROOT, rel)
+    if (existsSync(abs)) {
+      dotenv.config({ path: abs })
+      console.log(`· using ${rel}${envName ? ` (env=${envName})` : ''}`)
+      return
+    }
+  }
+  if (envName) { console.error(`✗ Env file not found: .env.${envName}`); process.exit(1) }
+}
+loadEnv()
 
 // Sanity: AUTOMATIONS_DIR resolved at root
 const MANIFEST_PATH = path.join(ROOT, '.prismeai/last-pull.json')
