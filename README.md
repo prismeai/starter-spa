@@ -226,6 +226,8 @@ All `.env*` files except `.env.example` are gitignored.
 | `PRISMEAI_APP_VERSION` | no | Version label written to workspace config (default `1.0.0`) |
 | `PRISMEAI_HTTP_TIMEOUT` | no | Per-request timeout in ms (default `30000`) |
 | `PRISMEAI_HTTP_RETRIES` | no | Max retries on 5xx / network errors (default `3`) |
+| `PRISMEAI_BUNDLE_SIZE_WARN` | no | Bundle size warn threshold in bytes (default `512000` = 500 KB) |
+| `PRISMEAI_BUNDLE_SIZE_MAX` | no | Bundle size hard limit in bytes (default `2097152` = 2 MB) |
 | `PRISMEAI_FORCE` | no | `true` to bypass conflict detection |
 | `PRISMEAI_SKIP_AUTOMATIONS_SYNC` | no | `true` to skip step 1 |
 | `PRISMEAI_SKIP_SOURCE_SYNC` | no | `true` to skip step 2 |

@@ -54,7 +54,8 @@ await mkdir(OUT_DIR, { recursive: true })
 await writeFile(OUT_FILE, result.outputFiles[0].contents)
 
 const elapsed = Date.now() - start
-const sizeKb = (result.outputFiles[0].contents.byteLength / 1024).toFixed(1)
+const bytes = result.outputFiles[0].contents.byteLength
+const sizeKb = (bytes / 1024).toFixed(1)
 
 console.log(`✓ Built ${path.relative(ROOT, OUT_FILE)} (${sizeKb} KB) in ${elapsed}ms`)
 console.log(`  External modules (provided by host): ${EXTERNALS.length}`)
@@ -62,4 +63,20 @@ console.log(`  External modules (provided by host): ${EXTERNALS.length}`)
 if (result.warnings.length) {
   console.warn(`⚠ ${result.warnings.length} warnings:`)
   for (const w of result.warnings) console.warn('  -', w.text)
+}
+
+// Bundle size guard: warn at WARN threshold, fail at MAX. Configurable via env.
+// Defaults: warn 500 KB, fail 2 MB. Apps over a few MB load slowly on mobile.
+const SIZE_WARN = parseInt(process.env.PRISMEAI_BUNDLE_SIZE_WARN || '512000', 10) // 500 KB
+const SIZE_MAX = parseInt(process.env.PRISMEAI_BUNDLE_SIZE_MAX || '2097152', 10)  // 2 MB
+
+if (bytes > SIZE_MAX) {
+  console.error(`✗ Bundle exceeds max size: ${sizeKb} KB > ${(SIZE_MAX / 1024).toFixed(0)} KB.`)
+  console.error(`  Either trim the bundle (tree-shake, code-split, drop heavy deps)`)
+  console.error(`  or raise PRISMEAI_BUNDLE_SIZE_MAX (current: ${SIZE_MAX} bytes).`)
+  process.exit(1)
+}
+if (bytes > SIZE_WARN) {
+  console.warn(`⚠ Bundle is ${sizeKb} KB (warn threshold: ${(SIZE_WARN / 1024).toFixed(0)} KB).`)
+  console.warn(`  Consider tree-shaking or React.lazy for heavy panels.`)
 }
