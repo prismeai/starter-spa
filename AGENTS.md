@@ -56,7 +56,7 @@ The deployed artifact is a CommonJS React bundle (`dist/bundle.js`) that the Pri
 
 5. **Don't bypass the deploy pipeline.** No "quick" `curl` deploys, no manual file uploads. If you need behavior the deploy script doesn't have, extend `scripts/deploy.mjs` and document it.
 
-6. **Don't change auth without good reason.** The script accepts `PRISME_ACCESS_TOKEN` (Bearer) or `PRISME_API_KEY` (`x-prismeai-api-key`). Keep both paths working.
+6. **Don't change auth without good reason.** The script accepts `PRISMEAI_ACCESS_TOKEN` (Bearer) or `PRISMEAI_API_KEY` (`x-prismeai-api-key`). Keep both paths working.
 
 7. **Don't introduce a build for `automations/, imports/, etc.`.** YAMLs under `automations/` are pushed as-is. Don't add a templating layer; keep the DSUL plain.
 
@@ -79,7 +79,7 @@ The deployed artifact is a CommonJS React bundle (`dist/bundle.js`) that the Pri
 ## Conventions
 
 - **Auth header**: `Authorization: Bearer at:<uuid>` for personal access tokens; `x-prismeai-api-key: <key>` for org keys. The deploy script picks one based on which env var is set.
-- **API base**: `PRISME_API_URL` MUST include `/v2` (e.g. `https://api.sandbox.prisme.ai/v2`). Append paths starting with `/`.
+- **API base**: `PRISMEAI_API_URL` MUST include `/v2` (e.g. `https://api.sandbox.prisme.ai/v2`). Append paths starting with `/`.
 - **Workspace IDs**: short alphanumeric (e.g. `B4eoHS6`), NOT UUIDs. `slug:` prefix works for some endpoints (webhooks) but not all (files).
 - **Automation slugs** can contain `/` (e.g. `v1/status`). URL-encode in API paths (`%2F`); use as-is in YAML and file paths.
 - **Hash algorithm**: SHA-256 hex for content addressing (matches the platform's own `computeHash`).
@@ -93,7 +93,7 @@ The deployed artifact is a CommonJS React bundle (`dist/bundle.js`) that the Pri
 - Importing from `@prisme.ai/sdk` in `src/`. The package is NOT on public npm. Use plain `fetch` and `socket.io-client` (when added).
 - Calling `process.env.X` in browser code — undefined in Vite/esbuild output.
 - Modifying `src/components/ui/*` without realizing they're treated as scaffold by the agent UI in the in-builder Builder. Edits will be preserved but the in-builder AI may regenerate them.
-- Writing a "test deploy" that calls the real API without checking which workspace is in `.env`. Always print `PRISME_WORKSPACE_ID` and confirm before destructive ops.
+- Writing a "test deploy" that calls the real API without checking which workspace is in `.env`. Always print `PRISMEAI_WORKSPACE_ID` and confirm before destructive ops.
 
 ---
 

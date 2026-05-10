@@ -12,7 +12,7 @@
  *   2. Compile + upload the bundle as a public file.
  *
  *   3. (Optional) Upload embed.js so the app can be embedded via <script> on
- *      a 3rd-party site. Skipped unless PRISME_PLATFORM_URL is set.
+ *      a 3rd-party site. Skipped unless PRISMEAI_PLATFORM_URL is set.
  *
  *   4. PATCH workspace.config.value.bundles[<slug>] so AppRenderer picks up
  *      the new bundle URL.
@@ -20,16 +20,16 @@
  *   5. POST /workspaces/:id/versions to snapshot a Prisme version.
  *
  * Required env (.env at repo root):
- *   PRISME_API_URL          full URL incl. /v2 (e.g. https://api.acme.com/v2)
- *   PRISME_API_KEY          personal API key
- *   PRISME_WORKSPACE_ID     UUID of the target workspace
+ *   PRISMEAI_API_URL          full URL incl. /v2 (e.g. https://api.acme.com/v2)
+ *   PRISMEAI_API_KEY          personal API key
+ *   PRISMEAI_WORKSPACE_ID     UUID of the target workspace
  *
  * Optional:
- *   PRISME_PLATFORM_URL          UI host for embed.js (e.g. https://app.acme.com)
- *   PRISME_BUNDLE_SLUG           override the bundles[<key>] (default: workspace.slug)
- *   PRISME_APP_VERSION           default '1.0.0'
- *   PRISME_SKIP_SOURCE_SYNC      'true' to skip step 1
- *   PRISME_SKIP_VERSION_SNAPSHOT 'true' to skip step 5
+ *   PRISMEAI_PLATFORM_URL          UI host for embed.js (e.g. https://app.acme.com)
+ *   PRISMEAI_BUNDLE_SLUG           override the bundles[<key>] (default: workspace.slug)
+ *   PRISMEAI_APP_VERSION           default '1.0.0'
+ *   PRISMEAI_SKIP_SOURCE_SYNC      'true' to skip step 1
+ *   PRISMEAI_SKIP_VERSION_SNAPSHOT 'true' to skip step 5
  */
 
 import 'dotenv/config'
@@ -44,32 +44,32 @@ const ROOT = path.resolve(__dirname, '..')
 const BUNDLE_PATH = path.join(ROOT, 'dist/bundle.js')
 
 const {
-  PRISME_API_URL,
-  PRISME_ACCESS_TOKEN,
-  PRISME_API_KEY,
-  PRISME_WORKSPACE_ID,
-  PRISME_PLATFORM_URL,
+  PRISMEAI_API_URL,
+  PRISMEAI_ACCESS_TOKEN,
+  PRISMEAI_API_KEY,
+  PRISMEAI_WORKSPACE_ID,
+  PRISMEAI_PLATFORM_URL,
 } = process.env
-const PRISME_APP_VERSION = process.env.PRISME_APP_VERSION || '1.0.0'
-const SKIP_SOURCE_SYNC = process.env.PRISME_SKIP_SOURCE_SYNC === 'true'
-const SKIP_VERSION_SNAPSHOT = process.env.PRISME_SKIP_VERSION_SNAPSHOT === 'true'
-const SKIP_AUTOMATIONS_SYNC = process.env.PRISME_SKIP_AUTOMATIONS_SYNC === 'true'
+const PRISMEAI_APP_VERSION = process.env.PRISMEAI_APP_VERSION || '1.0.0'
+const SKIP_SOURCE_SYNC = process.env.PRISMEAI_SKIP_SOURCE_SYNC === 'true'
+const SKIP_VERSION_SNAPSHOT = process.env.PRISMEAI_SKIP_VERSION_SNAPSHOT === 'true'
+const SKIP_AUTOMATIONS_SYNC = process.env.PRISMEAI_SKIP_AUTOMATIONS_SYNC === 'true'
 
 function fail(msg) {
   console.error(`✗ ${msg}`)
   process.exit(1)
 }
 
-if (!PRISME_API_URL) fail('Missing PRISME_API_URL in .env (must include /v2 suffix)')
-if (!PRISME_ACCESS_TOKEN && !PRISME_API_KEY) {
-  fail('Missing auth in .env: set either PRISME_ACCESS_TOKEN (recommended) or PRISME_API_KEY')
+if (!PRISMEAI_API_URL) fail('Missing PRISMEAI_API_URL in .env (must include /v2 suffix)')
+if (!PRISMEAI_ACCESS_TOKEN && !PRISMEAI_API_KEY) {
+  fail('Missing auth in .env: set either PRISMEAI_ACCESS_TOKEN (recommended) or PRISMEAI_API_KEY')
 }
-if (!PRISME_WORKSPACE_ID) fail('Missing PRISME_WORKSPACE_ID in .env')
+if (!PRISMEAI_WORKSPACE_ID) fail('Missing PRISMEAI_WORKSPACE_ID in .env')
 
-const API_BASE = PRISME_API_URL.replace(/\/$/, '')
-const AUTH_HEADERS = PRISME_ACCESS_TOKEN
-  ? { Authorization: `Bearer ${PRISME_ACCESS_TOKEN}` }
-  : { 'x-prismeai-api-key': PRISME_API_KEY }
+const API_BASE = PRISMEAI_API_URL.replace(/\/$/, '')
+const AUTH_HEADERS = PRISMEAI_ACCESS_TOKEN
+  ? { Authorization: `Bearer ${PRISMEAI_ACCESS_TOKEN}` }
+  : { 'x-prismeai-api-key': PRISMEAI_API_KEY }
 
 async function api(method, pathSuffix, { body, headers, raw } = {}) {
   const res = await fetch(`${API_BASE}${pathSuffix}`, {
@@ -202,7 +202,7 @@ function stableHash(obj) {
 
 async function syncAutomations() {
   if (SKIP_AUTOMATIONS_SYNC) {
-    console.log('· automations sync skipped (PRISME_SKIP_AUTOMATIONS_SYNC=true)')
+    console.log('· automations sync skipped (PRISMEAI_SKIP_AUTOMATIONS_SYNC=true)')
     return
   }
 
@@ -224,7 +224,7 @@ async function syncAutomations() {
   // per-slug GETs — too many round-trips to be worth it for typical workspace
   // sizes. We always PATCH when the slug exists; POST when new. PATCH is
   // idempotent so the worst case is a no-op write.
-  const ws = await api('GET', `/workspaces/${PRISME_WORKSPACE_ID}`)
+  const ws = await api('GET', `/workspaces/${PRISMEAI_WORKSPACE_ID}`)
   const remoteSlugs = new Set(Object.keys(ws?.automations || {}))
 
   let created = 0, updated = 0, deleted = 0
@@ -235,10 +235,10 @@ async function syncAutomations() {
     const body = automationBody(local)
 
     if (!remoteSlugs.has(local.slug)) {
-      await api('POST', `/workspaces/${PRISME_WORKSPACE_ID}/automations`, { body })
+      await api('POST', `/workspaces/${PRISMEAI_WORKSPACE_ID}/automations`, { body })
       created++
     } else {
-      await api('PATCH', `/workspaces/${PRISME_WORKSPACE_ID}/automations/${encodeURIComponent(local.slug)}`, { body })
+      await api('PATCH', `/workspaces/${PRISMEAI_WORKSPACE_ID}/automations/${encodeURIComponent(local.slug)}`, { body })
       updated++
     }
   }
@@ -246,7 +246,7 @@ async function syncAutomations() {
   for (const remoteSlug of remoteSlugs) {
     if (!localSlugs.has(remoteSlug)) {
       console.log(`  ⚠ deleting remote automation not present locally: ${remoteSlug}`)
-      await api('DELETE', `/workspaces/${PRISME_WORKSPACE_ID}/automations/${encodeURIComponent(remoteSlug)}`)
+      await api('DELETE', `/workspaces/${PRISMEAI_WORKSPACE_ID}/automations/${encodeURIComponent(remoteSlug)}`)
       deleted++
     }
   }
@@ -260,7 +260,7 @@ async function syncAutomations() {
 
 async function syncSourceFiles() {
   if (SKIP_SOURCE_SYNC) {
-    console.log('· source sync skipped (PRISME_SKIP_SOURCE_SYNC=true)')
+    console.log('· source sync skipped (PRISMEAI_SKIP_SOURCE_SYNC=true)')
     return
   }
 
@@ -269,7 +269,7 @@ async function syncSourceFiles() {
 
   // List existing source files
   const params = new URLSearchParams({ limit: '1000', 'metadata.type': 'source' })
-  const existing = await api('GET', `/workspaces/${PRISME_WORKSPACE_ID}/files?${params}`)
+  const existing = await api('GET', `/workspaces/${PRISMEAI_WORKSPACE_ID}/files?${params}`)
   const existingArr = Array.isArray(existing) ? existing : existing?.result || []
 
   // Build path → { id, hash, duplicates[] } map
@@ -287,7 +287,7 @@ async function syncSourceFiles() {
   // Delete duplicates
   for (const [, info] of byPath) {
     for (const dupId of info.duplicates) {
-      await api('DELETE', `/workspaces/${PRISME_WORKSPACE_ID}/files/${encodeURIComponent(dupId)}`)
+      await api('DELETE', `/workspaces/${PRISMEAI_WORKSPACE_ID}/files/${encodeURIComponent(dupId)}`)
       deleted++
     }
   }
@@ -304,7 +304,7 @@ async function syncSourceFiles() {
       await uploadSourceFile(file.rel, content, hash)
       uploaded++
     } else if (cur.hash !== hash) {
-      await api('DELETE', `/workspaces/${PRISME_WORKSPACE_ID}/files/${encodeURIComponent(cur.id)}`)
+      await api('DELETE', `/workspaces/${PRISMEAI_WORKSPACE_ID}/files/${encodeURIComponent(cur.id)}`)
       await uploadSourceFile(file.rel, content, hash)
       uploaded++
       deleted++
@@ -316,7 +316,7 @@ async function syncSourceFiles() {
   // Delete files that no longer exist locally
   for (const [p, info] of byPath) {
     if (!localPaths.has(p)) {
-      await api('DELETE', `/workspaces/${PRISME_WORKSPACE_ID}/files/${encodeURIComponent(info.id)}`)
+      await api('DELETE', `/workspaces/${PRISMEAI_WORKSPACE_ID}/files/${encodeURIComponent(info.id)}`)
       deleted++
     }
   }
@@ -332,7 +332,7 @@ async function uploadSourceFile(relPath, content, hash) {
   formData.append('metadata.type', 'source')
   formData.append('metadata.hash', hash)
   formData.append('public', 'false')
-  return api('POST', `/workspaces/${PRISME_WORKSPACE_ID}/files`, { body: formData })
+  return api('POST', `/workspaces/${PRISMEAI_WORKSPACE_ID}/files`, { body: formData })
 }
 
 // ---------------------------------------------------------------------------
@@ -347,7 +347,7 @@ async function uploadBundle() {
   const fd = new FormData()
   fd.append('file', new Blob([bundleBytes], { type: 'application/javascript' }), 'bundle.js')
   fd.append('public', 'true')
-  const res = await api('POST', `/workspaces/${PRISME_WORKSPACE_ID}/files`, { body: fd })
+  const res = await api('POST', `/workspaces/${PRISMEAI_WORKSPACE_ID}/files`, { body: fd })
   if (!Array.isArray(res) || !res[0]?.url) {
     fail('Bundle upload returned no URL. Check that the API key has write access to the workspace.')
   }
@@ -356,15 +356,15 @@ async function uploadBundle() {
 }
 
 // ---------------------------------------------------------------------------
-// 3. Upload embed.js (optional — only if PRISME_PLATFORM_URL is set)
+// 3. Upload embed.js (optional — only if PRISMEAI_PLATFORM_URL is set)
 // ---------------------------------------------------------------------------
 
 async function uploadEmbed() {
-  if (!PRISME_PLATFORM_URL) {
-    console.log('· embed.js upload skipped (set PRISME_PLATFORM_URL to enable)')
+  if (!PRISMEAI_PLATFORM_URL) {
+    console.log('· embed.js upload skipped (set PRISMEAI_PLATFORM_URL to enable)')
     return null
   }
-  const embedSrc = `${PRISME_PLATFORM_URL.replace(/\/$/, '')}/embed.js`
+  const embedSrc = `${PRISMEAI_PLATFORM_URL.replace(/\/$/, '')}/embed.js`
   console.log(`→ Fetching embed.js from ${embedSrc}`)
   const res = await fetch(embedSrc)
   if (!res.ok) {
@@ -375,7 +375,7 @@ async function uploadEmbed() {
   const fd = new FormData()
   fd.append('file', new Blob([code], { type: 'application/javascript' }), 'embed.js')
   fd.append('public', 'true')
-  const up = await api('POST', `/workspaces/${PRISME_WORKSPACE_ID}/files`, { body: fd })
+  const up = await api('POST', `/workspaces/${PRISMEAI_WORKSPACE_ID}/files`, { body: fd })
   if (!Array.isArray(up) || !up[0]?.url) {
     console.warn('⚠ embed.js upload returned no URL — skipping')
     return null
@@ -394,7 +394,7 @@ async function patchWorkspaceConfig({ bundleUrl, embedUrl, ws, slug }) {
   const existingBundles = existing.bundles || {}
   const builtAt = new Date().toISOString()
 
-  await api('PATCH', `/workspaces/${PRISME_WORKSPACE_ID}`, {
+  await api('PATCH', `/workspaces/${PRISMEAI_WORKSPACE_ID}`, {
     body: {
       config: {
         value: {
@@ -404,7 +404,7 @@ async function patchWorkspaceConfig({ bundleUrl, embedUrl, ws, slug }) {
             [slug]: {
               bundle: bundleUrl,
               ...(embedUrl ? { embed: embedUrl } : {}),
-              version: PRISME_APP_VERSION,
+              version: PRISMEAI_APP_VERSION,
               name: ws?.name || slug,
               builtAt,
             },
@@ -421,12 +421,12 @@ async function patchWorkspaceConfig({ bundleUrl, embedUrl, ws, slug }) {
 
 async function versionSnapshot() {
   if (SKIP_VERSION_SNAPSHOT) {
-    console.log('· version snapshot skipped (PRISME_SKIP_VERSION_SNAPSHOT=true)')
+    console.log('· version snapshot skipped (PRISMEAI_SKIP_VERSION_SNAPSHOT=true)')
     return
   }
-  console.log(`→ Creating version snapshot v${PRISME_APP_VERSION}`)
-  const res = await api('POST', `/workspaces/${PRISME_WORKSPACE_ID}/versions`, {
-    body: { description: `v${PRISME_APP_VERSION}` },
+  console.log(`→ Creating version snapshot v${PRISMEAI_APP_VERSION}`)
+  const res = await api('POST', `/workspaces/${PRISMEAI_WORKSPACE_ID}/versions`, {
+    body: { description: `v${PRISMEAI_APP_VERSION}` },
   })
   const name = res?.name || res?.version?.name || 'unknown'
   console.log(`✓ version=${name}`)
@@ -436,15 +436,15 @@ async function versionSnapshot() {
 // Run
 // ---------------------------------------------------------------------------
 
-console.log(`Deploying to ${API_BASE}, workspace=${PRISME_WORKSPACE_ID}`)
+console.log(`Deploying to ${API_BASE}, workspace=${PRISMEAI_WORKSPACE_ID}`)
 
 await syncAutomations()
 await syncSourceFiles()
 const bundleUrl = await uploadBundle()
 const embedUrl = await uploadEmbed()
 
-const ws = await api('GET', `/workspaces/${PRISME_WORKSPACE_ID}`)
-const slug = process.env.PRISME_BUNDLE_SLUG || ws?.slug || PRISME_WORKSPACE_ID
+const ws = await api('GET', `/workspaces/${PRISMEAI_WORKSPACE_ID}`)
+const slug = process.env.PRISMEAI_BUNDLE_SLUG || ws?.slug || PRISMEAI_WORKSPACE_ID
 
 await patchWorkspaceConfig({ bundleUrl, embedUrl, ws, slug })
 await versionSnapshot()

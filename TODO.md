@@ -14,7 +14,7 @@ These cause silent data loss, security exposure, or unrecoverable inconsistency.
 
 - **Why**: Today the deploy script silently overwrites Builder edits because there's no way to fetch them first. The README's Hybrid mode is undocumentable without it.
 - **Symptoms**: Teammate edits in Builder → developer runs `npm run deploy` → teammate's work is gone, no warning.
-- **Approach**: Mirror `syncFilesToWorkspace` in reverse — `GET /workspaces/:id/files?metadata.type=source`, fetch each `.url`, write to local `metadata.path`. Print summary `pulled=X new=Y modified=Z`. Refuse to overwrite locally-modified files (compare against last-pull manifest in `.prisme/last-pull.json`).
+- **Approach**: Mirror `syncFilesToWorkspace` in reverse — `GET /workspaces/:id/files?metadata.type=source`, fetch each `.url`, write to local `metadata.path`. Print summary `pulled=X new=Y modified=Z`. Refuse to overwrite locally-modified files (compare against last-pull manifest in `.prismeai/last-pull.json`).
 - **Status v0.1**: Pull script exists (`scripts/pull.mjs`), covers automations + source files, writes manifest. **NOT done**: locally-modified detection (overwrites unconditionally — manifest is written but not enforced).
 
 ### 2. Conflict detection on deploy
@@ -43,7 +43,7 @@ These cause silent data loss, security exposure, or unrecoverable inconsistency.
 
 ### 6. Secret hygiene
 
-- **Why**: `PRISME_ACCESS_TOKEN` in plaintext `.env` is fine for local dev but invites mistakes (committed to git, posted in support tickets, copied to other machines).
+- **Why**: `PRISMEAI_ACCESS_TOKEN` in plaintext `.env` is fine for local dev but invites mistakes (committed to git, posted in support tickets, copied to other machines).
 - **Symptoms**: Token leaks; developer can't rotate easily because the token is in too many places.
 - **Approach**: Document keychain integration (`security add-generic-password` on macOS, `secret-tool` on Linux, Windows Credential Manager). Provide a fallback `prisme login` CLI in v1.1 (P2). Add `.env*` to `.gitignore` (already done) AND warn at deploy start if `.env` is in `git status` (means it was force-added).
 
@@ -75,7 +75,7 @@ These don't cause data loss but they break common workflows.
 
 - **Why**: Bundles over a few MB load slowly and break mobile clients. Today nothing catches a customer accidentally bundling a 10 MB blob.
 - **Symptoms**: App loads slow on first visit; mobile users see timeouts.
-- **Approach**: After build, check `dist/bundle.js` size. Warn at 500 KB, fail at 2 MB by default. Configurable in `prisme.config.json`.
+- **Approach**: After build, check `dist/bundle.js` size. Warn at 500 KB, fail at 2 MB by default. Configurable in `prismeai.config.json`.
 
 ### 11. `npm run undeploy`
 
@@ -98,7 +98,7 @@ Not blockers, but every customer will want these.
 ### 13. `prisme login` CLI
 
 - **Why**: Pasting tokens from the UI is friction. AWS, gh, vercel, firebase, gcloud all use OIDC device flow.
-- **Approach**: Spawn local HTTP server on `127.0.0.1:<random>`, open browser at the platform's OIDC URL, capture the code redirect, exchange for token, cache in `~/.prisme/credentials.json` (mode 0600). Add refresh logic. Document opt-out for CI (uses access token from env).
+- **Approach**: Spawn local HTTP server on `127.0.0.1:<random>`, open browser at the platform's OIDC URL, capture the code redirect, exchange for token, cache in `~/.prismeai/credentials.json` (mode 0600). Add refresh logic. Document opt-out for CI (uses access token from env).
 
 ### 14. ESLint + Prettier + EditorConfig
 
@@ -110,7 +110,7 @@ Not blockers, but every customer will want these.
 - **Why**: Customers will copy whatever testing pattern we ship (or skip tests entirely if we ship none).
 - **Approach**: Add `vitest.config.ts`, `npm test`, and `src/App.test.tsx` showing how to mock `sdk` and assert on rendered output.
 
-### 16. `prisme.config.json`
+### 16. `prismeai.config.json`
 
 - **Why**: Multiple contributors each set different env vars; no shared config.
 - **Approach**: Optional config file for non-secret settings: `bundleSlug`, `appVersion`, `bundleSizeLimit`, `skipSourceSync`. Env vars override.
@@ -128,7 +128,7 @@ Not blockers, but every customer will want these.
 ### 19. Real-workspace dev mode
 
 - **Why**: `mockHost.ts` only echoes a few events. Customers need to point their local `npm run dev` at a real workspace's WebSocket.
-- **Approach**: If `VITE_PRISME_API_URL` and `VITE_PRISME_ACCESS_TOKEN` are set, `mockHost.ts` builds a real SDK via `new PrismeSDK.Api()` instead of stubs. Documented as the "advanced dev" path.
+- **Approach**: If `VITE_PRISMEAI_API_URL` and `VITE_PRISMEAI_ACCESS_TOKEN` are set, `mockHost.ts` builds a real SDK via `new PrismeSDK.Api()` instead of stubs. Documented as the "advanced dev" path.
 
 ### 20. Better deploy progress
 
@@ -172,7 +172,7 @@ Not blockers, but every customer will want these.
 ### 27. Multi-bundle workspaces
 
 - **Why**: A workspace can host multiple bundles via different `bundles[<slug>]` entries. Today we assume one bundle per workspace.
-- **Approach**: `prisme.config.json` lists multiple bundle entries with their own entry files; `npm run deploy --bundle=admin` builds and deploys one of them.
+- **Approach**: `prismeai.config.json` lists multiple bundle entries with their own entry files; `npm run deploy --bundle=admin` builds and deploys one of them.
 
 ### 28. Telemetry / observability
 
@@ -190,14 +190,14 @@ Not blockers, but every customer will want these.
 ### 30. Extend `deploy.mjs` to push automations ✅ done
 
 - New step 0 in deploy: walks `automations/`, diffs against workspace, upserts/deletes via `/v2/workspaces/:id/automations[/:slug]`. Uses `js-yaml` for parse + `JSON.stringify` with sorted keys for stable hashing.
-- Skip flag: `PRISME_SKIP_AUTOMATIONS_SYNC=true`.
+- Skip flag: `PRISMEAI_SKIP_AUTOMATIONS_SYNC=true`.
 
 ### 31. `npm run pull` script ✅ done (see P0 #1)
 
 ### 32. Refactor mockHost.ts → host.ts (real-mode driven by env vars)
 
 - **Why**: Today local dev mocks `streamEvents` with a 400ms echo. Customer thinks events work, ships, finds the real workspace doesn't have the matching automation.
-- **Approach**: When `VITE_PRISME_API_URL`, `VITE_PRISME_ACCESS_TOKEN`, `VITE_PRISME_WORKSPACE_ID` are set, build a real SDK shim that hits the workspace. Falls back to mock with warning if not set. Document hostname-alias trick if WebSocket origin restrictions hit.
+- **Approach**: When `VITE_PRISMEAI_API_URL`, `VITE_PRISMEAI_ACCESS_TOKEN`, `VITE_PRISMEAI_WORKSPACE_ID` are set, build a real SDK shim that hits the workspace. Falls back to mock with warning if not set. Document hostname-alias trick if WebSocket origin restrictions hit.
 - **Status**: NOT done. Mock host still echoes locally only.
 
 ### 33. `src/lib/prismeClient.ts` — minimal hand-rolled SDK

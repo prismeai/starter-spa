@@ -5,5 +5,5 @@ dist
 .DS_Store
 *.log
 .vite
-.prisme/
+.prismeai/
 .pull-cache/

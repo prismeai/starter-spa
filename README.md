@@ -19,11 +19,11 @@ This is the **SPA starter** in the [Prisme.ai starter family](#related-starters)
 2. Go to **Settings → Access Tokens** (URL: `/settings/tokens`).
 3. Click **Create**, give it a name (e.g. `starter-deploy`) and an expiry date.
 4. **Copy the token immediately** — the value is shown only once at creation. Format: `at:<uuid>`.
-5. Paste it into `.env` as `PRISME_ACCESS_TOKEN=at:...`.
+5. Paste it into `.env` as `PRISMEAI_ACCESS_TOKEN=at:...`.
 
 You can list, see days-until-expiry, and revoke your tokens from the same screen.
 
-> **Alternative**: org-scoped API keys (created in the AI Governance app → API Keys) are also supported via `PRISME_API_KEY`. Use ONE of `PRISME_ACCESS_TOKEN` or `PRISME_API_KEY`. Access tokens are preferred for individual contributors; API keys for shared CI service accounts.
+> **Alternative**: org-scoped API keys (created in the AI Governance app → API Keys) are also supported via `PRISMEAI_API_KEY`. Use ONE of `PRISMEAI_ACCESS_TOKEN` or `PRISMEAI_API_KEY`. Access tokens are preferred for individual contributors; API keys for shared CI service accounts.
 
 ---
 
@@ -34,7 +34,7 @@ git clone <this-repo> my-app
 cd my-app
 npm install
 cp .env.example .env
-# Edit .env and fill in PRISME_API_URL, PRISME_API_KEY, PRISME_WORKSPACE_ID
+# Edit .env and fill in PRISMEAI_API_URL, PRISMEAI_API_KEY, PRISMEAI_WORKSPACE_ID
 
 npm run dev      # local Vite dev server with mocked sdk/workspace
 npm run release  # build + deploy to your workspace
@@ -162,7 +162,7 @@ npm run dev
 Opens `http://localhost:5173`. The mock host intercepts:
 
 - `sdk.streamEvents(...)` — returns an in-memory event bus that locally echoes `app.greeting.requested` → `app.greeting.completed`.
-- The webhook URL is built from `sdk.host`. If you set `VITE_PRISME_API_URL` and `VITE_PRISME_API_KEY` in `.env`, the REST tab will hit your real workspace.
+- The webhook URL is built from `sdk.host`. If you set `VITE_PRISMEAI_API_URL` and `VITE_PRISMEAI_API_KEY` in `.env`, the REST tab will hit your real workspace.
 
 The Tabs panel is a demo. Replace it with your actual UI once you understand the patterns.
 
@@ -195,12 +195,12 @@ The deploy script mirrors the **in-builder Deploy button** (`BundlePublishModal.
 
 | # | Step | What it writes | Skip with |
 |---|---|---|---|
-| 0 | **Automations sync** | Walks `automations/**/*.yml`, parses each, diffs against `workspace.automations`. Creates new, updates changed, deletes removed. | `PRISME_SKIP_AUTOMATIONS_SYNC=true` |
-| 1 | **Source sync** | Walks `src/` + root config files, SHA-256 hashes each, diffs against existing `metadata.type=source` files. Uploads new, replaces changed, deletes removed. | `PRISME_SKIP_SOURCE_SYNC=true` |
+| 0 | **Automations sync** | Walks `automations/**/*.yml`, parses each, diffs against `workspace.automations`. Creates new, updates changed, deletes removed. | `PRISMEAI_SKIP_AUTOMATIONS_SYNC=true` |
+| 1 | **Source sync** | Walks `src/` + root config files, SHA-256 hashes each, diffs against existing `metadata.type=source` files. Uploads new, replaces changed, deletes removed. | `PRISMEAI_SKIP_SOURCE_SYNC=true` |
 | 2 | **Bundle upload** | `POST /workspaces/:id/files` (`public=true`) — returns the CDN URL. | — |
-| 3 | **embed.js upload** | Fetches `${PRISME_PLATFORM_URL}/embed.js` and uploads as a public file. Only needed for 3rd-party `<script>` embedding. | unset `PRISME_PLATFORM_URL` |
+| 3 | **embed.js upload** | Fetches `${PRISMEAI_PLATFORM_URL}/embed.js` and uploads as a public file. Only needed for 3rd-party `<script>` embedding. | unset `PRISMEAI_PLATFORM_URL` |
 | 4 | **Patch workspace config** | `PATCH /workspaces/:id` writes `config.value.bundles[<slug>] = { bundle, embed?, version, name, builtAt }`. **This is the live pointer `AppRenderer` reads on every page load.** | — |
-| 5 | **Version snapshot** | `POST /workspaces/:id/versions` creates a Prisme.ai workspace version. | `PRISME_SKIP_VERSION_SNAPSHOT=true` |
+| 5 | **Version snapshot** | `POST /workspaces/:id/versions` creates a Prisme.ai workspace version. | `PRISMEAI_SKIP_VERSION_SNAPSHOT=true` |
 
 ### Pulling workspace state → local
 
@@ -212,7 +212,7 @@ Inverse of deploy. Fetches:
 - All workspace automations → written to `automations/<slug>.yml`
 - All `metadata.type=source` files → written to local at their `metadata.path`
 
-Use after a teammate edited automations or source files in the in-builder Builder, OR to bootstrap from an existing workspace. Writes a hash manifest to `.prisme/last-pull.json` for future conflict detection (not yet enforced — see TODO.md P0 #2).
+Use after a teammate edited automations or source files in the in-builder Builder, OR to bootstrap from an existing workspace. Writes a hash manifest to `.prismeai/last-pull.json` for future conflict detection (not yet enforced — see TODO.md P0 #2).
 
 > ⚠ Pull **overwrites local files without confirmation**. Commit your local changes first; review with `git diff` after.
 
@@ -222,16 +222,16 @@ After deploy, hard-reload your browser to bypass any cached bundle.
 
 | Var | Required | Purpose |
 |---|---|---|
-| `PRISME_API_URL` | yes | Your platform's API URL **including `/v2`** (e.g. `https://api.acme.example.com/v2`) |
-| `PRISME_ACCESS_TOKEN` | one of these | Personal access token (`at:<uuid>`). Sent as `Authorization: Bearer ...` |
-| `PRISME_API_KEY` | one of these | Org-scoped API key. Sent as `x-prismeai-api-key`. Use access token instead when possible. |
-| `PRISME_WORKSPACE_ID` | yes | Short ID of the target workspace (e.g. `B4eoHS6`) |
-| `PRISME_PLATFORM_URL` | no | UI host (e.g. `https://app.acme.example.com`). Only needed for embed.js. |
-| `PRISME_BUNDLE_SLUG` | no | Override the bundles[<key>] (default: workspace slug) |
-| `PRISME_APP_VERSION` | no | Version label written to workspace config (default `1.0.0`) |
-| `PRISME_SKIP_AUTOMATIONS_SYNC` | no | `true` to skip step 0 |
-| `PRISME_SKIP_SOURCE_SYNC` | no | `true` to skip step 1 |
-| `PRISME_SKIP_VERSION_SNAPSHOT` | no | `true` to skip step 5 |
+| `PRISMEAI_API_URL` | yes | Your platform's API URL **including `/v2`** (e.g. `https://api.acme.example.com/v2`) |
+| `PRISMEAI_ACCESS_TOKEN` | one of these | Personal access token (`at:<uuid>`). Sent as `Authorization: Bearer ...` |
+| `PRISMEAI_API_KEY` | one of these | Org-scoped API key. Sent as `x-prismeai-api-key`. Use access token instead when possible. |
+| `PRISMEAI_WORKSPACE_ID` | yes | Short ID of the target workspace (e.g. `B4eoHS6`) |
+| `PRISMEAI_PLATFORM_URL` | no | UI host (e.g. `https://app.acme.example.com`). Only needed for embed.js. |
+| `PRISMEAI_BUNDLE_SLUG` | no | Override the bundles[<key>] (default: workspace slug) |
+| `PRISMEAI_APP_VERSION` | no | Version label written to workspace config (default `1.0.0`) |
+| `PRISMEAI_SKIP_AUTOMATIONS_SYNC` | no | `true` to skip step 0 |
+| `PRISMEAI_SKIP_SOURCE_SYNC` | no | `true` to skip step 1 |
+| `PRISMEAI_SKIP_VERSION_SNAPSHOT` | no | `true` to skip step 5 |
 
 ---
 
@@ -258,7 +258,7 @@ To avoid surprises, pick **one** of these three modes per workspace and commit t
 
 All edits happen in VS Code. Nobody opens the in-builder Builder for source changes.
 
-- Set `PRISME_SKIP_SOURCE_SYNC=true` to avoid leaving stale files in the workspace.
+- Set `PRISMEAI_SKIP_SOURCE_SYNC=true` to avoid leaving stale files in the workspace.
 - The deploy script then only writes the bundle + config + version snapshot.
 - Code review happens in your git host (GitHub PRs, GitLab MRs).
 
@@ -286,13 +286,13 @@ source .env
 mkdir -p .pull-cache && cd .pull-cache
 
 # 1. List source files in the workspace
-curl -sS "$PRISME_API_URL/workspaces/$PRISME_WORKSPACE_ID/files?metadata.type=source&limit=1000" \
-  -H "Authorization: Bearer $PRISME_ACCESS_TOKEN" > files.json
+curl -sS "$PRISMEAI_API_URL/workspaces/$PRISMEAI_WORKSPACE_ID/files?metadata.type=source&limit=1000" \
+  -H "Authorization: Bearer $PRISMEAI_ACCESS_TOKEN" > files.json
 
 # 2. Download each file to its metadata.path
 jq -r '.[] | "\(.url)\t\(.metadata.path)"' files.json | while IFS=$'\t' read -r url path; do
   mkdir -p "$(dirname "$path")"
-  curl -sS "$url" -H "Authorization: Bearer $PRISME_ACCESS_TOKEN" -o "$path"
+  curl -sS "$url" -H "Authorization: Bearer $PRISMEAI_ACCESS_TOKEN" -o "$path"
   echo "← $path"
 done
 
@@ -332,11 +332,11 @@ Aim to keep your bundle under ~500 KB minified. Tree-shake unused exports, code-
 | Webhook returns 401 | Missing auth cookie on the request | Add `credentials: 'include'` to the `fetch()` |
 | Webhook returns 404 | Automation slug mismatch — `endpoint:` in the YAML must equal the path in the URL | Open the automation in the Builder, copy its endpoint |
 | `streamEvents` never connects | Wrong workspace identifier | Use `workspace.id` (UUID), not `workspace.slug` — the events service requires the UUID for non-`slug:` identifiers |
-| `npm run deploy` → `404 /v2/v2/...` | `PRISME_API_URL` doesn't include `/v2`, or includes it twice | Set it to `https://api.example.com/v2` (one `/v2`, no trailing slash) |
+| `npm run deploy` → `404 /v2/v2/...` | `PRISMEAI_API_URL` doesn't include `/v2`, or includes it twice | Set it to `https://api.example.com/v2` (one `/v2`, no trailing slash) |
 | Deploy succeeds but app doesn't update | CDN cache | Hard-reload (Cmd+Shift+R) or wait ~30s |
 | `Failed to upload bundle: server returned no file` | Token/key lacks write access to that workspace | Check the workspace's RBAC; the token's owner must be a workspace admin |
-| Deploy fails with 401 | Token expired or wrong | Mint a new one in **Settings → Access Tokens**; re-check `PRISME_API_URL` includes `/v2` |
-| Source sync deletes a teammate's edits | They edited in the Builder but you ran `npm run deploy` without pulling first | Set `PRISME_SKIP_SOURCE_SYNC=true` for solo deploys, or coordinate via git PRs |
+| Deploy fails with 401 | Token expired or wrong | Mint a new one in **Settings → Access Tokens**; re-check `PRISMEAI_API_URL` includes `/v2` |
+| Source sync deletes a teammate's edits | They edited in the Builder but you ran `npm run deploy` without pulling first | Set `PRISMEAI_SKIP_SOURCE_SYNC=true` for solo deploys, or coordinate via git PRs |
 
 ---
 

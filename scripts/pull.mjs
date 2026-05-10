@@ -13,10 +13,10 @@
  *   2. GET /v2/workspaces/:id/files?metadata.type=source
  *      → for each, download URL → write to local at metadata.path
  *
- *   3. Write .prisme/last-pull.json with hash manifest (for future conflict
+ *   3. Write .prismeai/last-pull.json with hash manifest (for future conflict
  *      detection in deploy — not yet enforced in v0.1).
  *
- * Required env: same as deploy.mjs (PRISME_API_URL, PRISME_ACCESS_TOKEN, PRISME_WORKSPACE_ID).
+ * Required env: same as deploy.mjs (PRISMEAI_API_URL, PRISMEAI_ACCESS_TOKEN, PRISMEAI_WORKSPACE_ID).
  *
  * ⚠ This OVERWRITES local files without confirmation. Commit your local
  *   changes first, then `git diff` after pull to review what was fetched.
@@ -34,25 +34,25 @@ const ROOT = path.resolve(__dirname, '..')
 const AUTOMATIONS_DIR = path.join(ROOT, 'automations')
 
 // Sanity: AUTOMATIONS_DIR resolved at root
-const MANIFEST_PATH = path.join(ROOT, '.prisme/last-pull.json')
+const MANIFEST_PATH = path.join(ROOT, '.prismeai/last-pull.json')
 
-const { PRISME_API_URL, PRISME_ACCESS_TOKEN, PRISME_API_KEY, PRISME_WORKSPACE_ID } = process.env
-const SKIP_AUTOMATIONS = process.env.PRISME_SKIP_AUTOMATIONS_SYNC === 'true'
-const SKIP_SOURCE = process.env.PRISME_SKIP_SOURCE_SYNC === 'true'
+const { PRISMEAI_API_URL, PRISMEAI_ACCESS_TOKEN, PRISMEAI_API_KEY, PRISMEAI_WORKSPACE_ID } = process.env
+const SKIP_AUTOMATIONS = process.env.PRISMEAI_SKIP_AUTOMATIONS_SYNC === 'true'
+const SKIP_SOURCE = process.env.PRISMEAI_SKIP_SOURCE_SYNC === 'true'
 
 function fail(msg) {
   console.error(`✗ ${msg}`)
   process.exit(1)
 }
 
-if (!PRISME_API_URL) fail('Missing PRISME_API_URL in .env')
-if (!PRISME_ACCESS_TOKEN && !PRISME_API_KEY) fail('Missing PRISME_ACCESS_TOKEN or PRISME_API_KEY in .env')
-if (!PRISME_WORKSPACE_ID) fail('Missing PRISME_WORKSPACE_ID in .env')
+if (!PRISMEAI_API_URL) fail('Missing PRISMEAI_API_URL in .env')
+if (!PRISMEAI_ACCESS_TOKEN && !PRISMEAI_API_KEY) fail('Missing PRISMEAI_ACCESS_TOKEN or PRISMEAI_API_KEY in .env')
+if (!PRISMEAI_WORKSPACE_ID) fail('Missing PRISMEAI_WORKSPACE_ID in .env')
 
-const API_BASE = PRISME_API_URL.replace(/\/$/, '')
-const AUTH_HEADERS = PRISME_ACCESS_TOKEN
-  ? { Authorization: `Bearer ${PRISME_ACCESS_TOKEN}` }
-  : { 'x-prismeai-api-key': PRISME_API_KEY }
+const API_BASE = PRISMEAI_API_URL.replace(/\/$/, '')
+const AUTH_HEADERS = PRISMEAI_ACCESS_TOKEN
+  ? { Authorization: `Bearer ${PRISMEAI_ACCESS_TOKEN}` }
+  : { 'x-prismeai-api-key': PRISMEAI_API_KEY }
 
 async function api(method, pathSuffix) {
   const res = await fetch(`${API_BASE}${pathSuffix}`, { method, headers: AUTH_HEADERS })
@@ -76,7 +76,7 @@ async function ensureDir(filePath) {
   await mkdir(path.dirname(filePath), { recursive: true })
 }
 
-console.log(`Pulling from ${API_BASE}, workspace=${PRISME_WORKSPACE_ID}`)
+console.log(`Pulling from ${API_BASE}, workspace=${PRISMEAI_WORKSPACE_ID}`)
 
 const manifest = { pulledAt: new Date().toISOString(), automations: {}, sourceFiles: {} }
 
@@ -100,14 +100,14 @@ if (!SKIP_AUTOMATIONS) {
   console.log(`→ Fetching workspace automations`)
   // /workspaces/:id returns SUMMARY automations (no `do`/`output`).
   // We need per-slug GETs for the full body.
-  const ws = await api('GET', `/workspaces/${PRISME_WORKSPACE_ID}`)
+  const ws = await api('GET', `/workspaces/${PRISMEAI_WORKSPACE_ID}`)
   const slugs = Object.keys(ws?.automations || {})
 
   if (slugs.length === 0) {
     console.log('  (none)')
   } else {
     for (const slug of slugs) {
-      const full = await api('GET', `/workspaces/${PRISME_WORKSPACE_ID}/automations/${encodeURIComponent(slug)}`)
+      const full = await api('GET', `/workspaces/${PRISMEAI_WORKSPACE_ID}/automations/${encodeURIComponent(slug)}`)
       const clean = stripServerFields({ slug, ...full })
       const yamlContent = yaml.dump(clean, { lineWidth: -1, quotingType: "'" })
       const filePath = path.join(AUTOMATIONS_DIR, `${slug}.yml`)
@@ -118,7 +118,7 @@ if (!SKIP_AUTOMATIONS) {
     }
   }
 } else {
-  console.log('· automations pull skipped (PRISME_SKIP_AUTOMATIONS_SYNC=true)')
+  console.log('· automations pull skipped (PRISMEAI_SKIP_AUTOMATIONS_SYNC=true)')
 }
 
 // ---------------------------------------------------------------------------
@@ -128,7 +128,7 @@ if (!SKIP_AUTOMATIONS) {
 if (!SKIP_SOURCE) {
   console.log(`→ Fetching source files`)
   const params = new URLSearchParams({ limit: '1000', 'metadata.type': 'source' })
-  const list = await api('GET', `/workspaces/${PRISME_WORKSPACE_ID}/files?${params}`)
+  const list = await api('GET', `/workspaces/${PRISMEAI_WORKSPACE_ID}/files?${params}`)
   const files = Array.isArray(list) ? list : list?.result || []
 
   if (files.length === 0) {
@@ -146,7 +146,7 @@ if (!SKIP_SOURCE) {
     }
   }
 } else {
-  console.log('· source pull skipped (PRISME_SKIP_SOURCE_SYNC=true)')
+  console.log('· source pull skipped (PRISMEAI_SKIP_SOURCE_SYNC=true)')
 }
 
 // ---------------------------------------------------------------------------
@@ -158,4 +158,4 @@ await writeFile(MANIFEST_PATH, JSON.stringify(manifest, null, 2), 'utf8')
 
 console.log()
 console.log(`✓ Pull complete. Review with: git status && git diff`)
-console.log(`  Manifest: .prisme/last-pull.json (used by future conflict detection)`)
+console.log(`  Manifest: .prismeai/last-pull.json (used by future conflict detection)`)
