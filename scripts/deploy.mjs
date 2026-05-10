@@ -35,6 +35,7 @@
 import 'dotenv/config'
 import { readFile, readdir, stat, writeFile, mkdir } from 'node:fs/promises'
 import { createHash } from 'node:crypto'
+import { execSync } from 'node:child_process'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import yaml from 'js-yaml'
@@ -605,6 +606,26 @@ async function versionSnapshot() {
 // ---------------------------------------------------------------------------
 // Run
 // ---------------------------------------------------------------------------
+
+// Secret hygiene: warn loudly if .env is tracked by git (it's in .gitignore
+// by default, so being tracked means someone force-added it and the access
+// token may be in commit history).
+function warnIfEnvTracked() {
+  try {
+    const tracked = execSync('git ls-files --error-unmatch .env', {
+      cwd: ROOT, stdio: ['ignore', 'pipe', 'ignore'], encoding: 'utf8',
+    }).trim()
+    if (tracked) {
+      console.warn('⚠ .env is tracked by git. Your PRISMEAI_ACCESS_TOKEN may be in commit history.')
+      console.warn('  Recommended:')
+      console.warn('    git rm --cached .env && git commit -m "untrack .env"')
+      console.warn('    Then rotate the token in your platform UI: Settings → Access Tokens')
+      console.warn('')
+    }
+  } catch { /* not tracked, or not a git repo — both fine */ }
+}
+
+warnIfEnvTracked()
 
 console.log(`Deploying to ${API_BASE}, workspace=${PRISMEAI_WORKSPACE_ID}`)
 

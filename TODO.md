@@ -42,11 +42,12 @@ These cause silent data loss, security exposure, or unrecoverable inconsistency.
 - **Symptoms**: After 100 deploys, the workspace has 100 dead bundle files. Hits storage limits or makes file-list slow.
 - **Status v0.1**: Step 4b in `deploy.mjs` runs after config PATCH. Lists all public `bundle.js` / `embed.js` files; deletes any not in current `bundles[*]`. Skip flag: `PRISMEAI_SKIP_BUNDLE_CLEANUP=true`.
 
-### 6. Secret hygiene
+### 6. Secret hygiene ✅ done (v0.1)
 
 - **Why**: `PRISMEAI_ACCESS_TOKEN` in plaintext `.env` is fine for local dev but invites mistakes (committed to git, posted in support tickets, copied to other machines).
 - **Symptoms**: Token leaks; developer can't rotate easily because the token is in too many places.
-- **Approach**: Document keychain integration (`security add-generic-password` on macOS, `secret-tool` on Linux, Windows Credential Manager). Provide a fallback `prisme login` CLI in v1.1 (P2). Add `.env*` to `.gitignore` (already done) AND warn at deploy start if `.env` is in `git status` (means it was force-added).
+- **Status v0.1**: deploy.mjs runs `git ls-files --error-unmatch .env` at start; warns loudly if tracked. README "Secret hygiene" section documents keychain integration (macOS `security`, Linux `secret-tool`, Windows `cmdkey`) and CI secrets pattern.
+- **Future** (P2 #13): `prisme login` CLI for OIDC device-flow auth — eliminates plaintext tokens entirely.
 
 ---
 

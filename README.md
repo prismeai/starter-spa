@@ -219,6 +219,34 @@ Use after a teammate edited automations or source files in the in-builder Builde
 
 After deploy, hard-reload your browser to bypass any cached bundle.
 
+### Secret hygiene
+
+`.env` is gitignored by default. The deploy script warns at start if it's tracked anyway (force-added) — that means your token may be in commit history.
+
+For long-term storage, prefer your OS keychain over a plaintext `.env`:
+
+**macOS** — store once, fetch at deploy time:
+```bash
+security add-generic-password -s prismeai-sandbox -a $USER -w  # prompts silently
+# Then in your shell or CI:
+export PRISMEAI_ACCESS_TOKEN=$(security find-generic-password -s prismeai-sandbox -w)
+npm run release
+```
+
+**Linux** (GNOME / `libsecret`):
+```bash
+secret-tool store --label="Prisme.ai sandbox" service prismeai-sandbox account $USER
+export PRISMEAI_ACCESS_TOKEN=$(secret-tool lookup service prismeai-sandbox account $USER)
+```
+
+**Windows** (Credential Manager via `cmdkey`):
+```cmd
+cmdkey /generic:prismeai-sandbox /user:%USERNAME% /pass
+:: Reading back requires PowerShell + CredentialManager module — easier to use a credential file
+```
+
+**CI** (GitHub Actions / GitLab CI): use the platform's secrets store — never put the token in repo files. Inject as `PRISMEAI_ACCESS_TOKEN` env at job start.
+
 ### Conflict detection (since v0.1)
 
 Before doing anything, the deploy script checks `.prismeai/last-pull.json` (written by `npm run pull`) against the workspace's current state. If anything changed remotely since your last pull — automation `checksum` or source file `metadata.hash` — the deploy is **refused** with a list of conflicting items:
