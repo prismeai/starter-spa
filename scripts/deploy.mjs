@@ -58,10 +58,9 @@ const SKIP_AUTOMATIONS_SYNC = process.env.PRISMEAI_SKIP_AUTOMATIONS_SYNC === 'tr
 const SKIP_BUNDLE_CLEANUP = process.env.PRISMEAI_SKIP_BUNDLE_CLEANUP === 'true'
 const FORCE = process.argv.includes('--force') || process.env.PRISMEAI_FORCE === 'true'
 
-function fail(msg) {
-  console.error(`✗ ${msg}`)
-  process.exit(1)
-}
+// fail() throws so the top-level try/catch can print a deploy summary + recovery
+// guidance before exiting non-zero. Don't call process.exit() directly here.
+function fail(msg) { throw new Error(msg) }
 
 if (!PRISMEAI_API_URL) fail('Missing PRISMEAI_API_URL in .env (must include /v2 suffix)')
 if (!PRISMEAI_ACCESS_TOKEN && !PRISMEAI_API_KEY) {
@@ -83,7 +82,7 @@ async function api(method, pathSuffix, { body, headers, raw } = {}) {
   let lastError = ''
   for (let attempt = 0; attempt <= HTTP_MAX_RETRIES; attempt++) {
     if (attempt > 0) {
-      const waitMs = 1000 * Math.pow(2, attempt - 1) // 1s, 2s, 4s, ...
+      const waitMs = 1000 * Math.pow(2, attempt - 1) // 1s, 2s, 4s
       console.warn(`  ↻ retry ${attempt}/${HTTP_MAX_RETRIES} for ${method} ${pathSuffix} after ${waitMs}ms (last: ${lastError})`)
       await new Promise(r => setTimeout(r, waitMs))
     }
@@ -91,8 +90,9 @@ async function api(method, pathSuffix, { body, headers, raw } = {}) {
     const controller = new AbortController()
     const timer = setTimeout(() => controller.abort(), HTTP_TIMEOUT_MS)
 
+    let res
     try {
-      const res = await fetch(`${API_BASE}${pathSuffix}`, {
+      res = await fetch(`${API_BASE}${pathSuffix}`, {
         method,
         headers: {
           ...AUTH_HEADERS,
@@ -102,27 +102,29 @@ async function api(method, pathSuffix, { body, headers, raw } = {}) {
         body: body instanceof FormData ? body : body ? JSON.stringify(body) : undefined,
         signal: controller.signal,
       })
-      clearTimeout(timer)
-
-      // 4xx — deterministic, fail fast
-      if (res.status >= 400 && res.status < 500) {
-        const text = await res.text().catch(() => '')
-        fail(`${method} ${pathSuffix} → ${res.status} ${res.statusText}\n${text}`)
-      }
-      // 5xx — transient, retry
-      if (res.status >= 500) {
-        lastError = `${res.status} ${res.statusText}`
-        continue
-      }
-      // 2xx
-      if (res.status === 204) return null
-      if (raw) return res
-      const ct = res.headers.get('content-type') || ''
-      return ct.includes('application/json') ? res.json() : res.text()
     } catch (err) {
+      // Network or timeout error — retry
       clearTimeout(timer)
       lastError = err?.name === 'AbortError' ? `timeout after ${HTTP_TIMEOUT_MS}ms` : (err?.message || String(err))
+      continue
     }
+    clearTimeout(timer)
+
+    // 4xx — deterministic, fail fast (no retry)
+    if (res.status >= 400 && res.status < 500) {
+      const text = await res.text().catch(() => '')
+      fail(`${method} ${pathSuffix} → ${res.status} ${res.statusText}\n${text}`)
+    }
+    // 5xx — transient, retry
+    if (res.status >= 500) {
+      lastError = `${res.status} ${res.statusText}`
+      continue
+    }
+    // 2xx
+    if (res.status === 204) return null
+    if (raw) return res
+    const ct = res.headers.get('content-type') || ''
+    return ct.includes('application/json') ? res.json() : res.text()
   }
   fail(`${method} ${pathSuffix} failed after ${HTTP_MAX_RETRIES + 1} attempts: ${lastError}`)
 }
@@ -627,20 +629,79 @@ function warnIfEnvTracked() {
 
 warnIfEnvTracked()
 
+// Track each step's status so a partial failure can print exactly what
+// happened and what the user should do next.
+const steps = [
+  { key: 'conflict',    label: 'Conflict detection' },
+  { key: 'automations', label: 'Automations sync' },
+  { key: 'source',      label: 'Source files sync' },
+  { key: 'bundle',      label: 'Bundle upload' },
+  { key: 'embed',       label: 'embed.js upload' },
+  { key: 'config',      label: 'Workspace config PATCH (live pointer)' },
+  { key: 'cleanup',     label: 'Orphan bundle cleanup' },
+  { key: 'version',     label: 'Version snapshot' },
+]
+const status = Object.fromEntries(steps.map(s => [s.key, 'pending']))
+
+function mark(key, value) { status[key] = value }
+
+function printSummary() {
+  console.log('\nSummary:')
+  const icon = { done: '✓', failed: '✗', skipped: '·', pending: '○' }
+  for (const s of steps) console.log(`  ${icon[status[s.key]] || '?'} ${s.label}`)
+}
+
+// Per-step recovery guidance — what the user should do next given which step failed.
+// The CRITICAL boundary is `config`: before it, end users still see the previous
+// version. After it, the new version is live.
+const RECOVERY = {
+  conflict:    'No state changed. Either run `npm run pull` to fetch remote changes, or use --force to override.',
+  automations: 'Some automations may have been pushed before the failure. The live UI is unaffected. Re-run `npm run deploy` to retry (PATCHes are idempotent).',
+  source:      'Some source files may have been uploaded. The live UI is unaffected. Re-run `npm run deploy` — differential sync will only push what changed.',
+  bundle:      'Bundle upload failed. End users still see the previous version. Re-run `npm run deploy`.',
+  embed:       'Bundle is uploaded but embed.js (3rd-party embedding) failed. /apps/<slug> still works. Either set/check PRISMEAI_PLATFORM_URL, or unset it to skip embed entirely.',
+  config:      'CRITICAL: bundle was uploaded but workspace config was NOT updated. The new bundle is orphaned; end users still see the OLD version. Re-run `npm run deploy` — a new bundle upload will succeed and the config patch will retry.',
+  cleanup:     'Deploy SUCCEEDED — the live UI is updated to the new bundle. Cleanup of orphan bundle files failed but is non-critical (will retry next deploy).',
+  version:     'Deploy SUCCEEDED — the live UI is updated. Version snapshot failed; you may not have a rollback point for this release.',
+}
+
 console.log(`Deploying to ${API_BASE}, workspace=${PRISMEAI_WORKSPACE_ID}`)
 
-await detectConflicts()
-await syncAutomations()
-await syncSourceFiles()
-const bundleUrl = await uploadBundle()
-const embedUrl = await uploadEmbed()
+let exitCode = 0
+let bundleUrl, embedUrl, slug
 
-const ws = await api('GET', `/workspaces/${PRISMEAI_WORKSPACE_ID}`)
-const slug = process.env.PRISMEAI_BUNDLE_SLUG || ws?.slug || PRISMEAI_WORKSPACE_ID
+try {
+  await detectConflicts();             mark('conflict', 'done')
+  await syncAutomations();             mark('automations', SKIP_AUTOMATIONS_SYNC ? 'skipped' : 'done')
+  await syncSourceFiles();             mark('source', SKIP_SOURCE_SYNC ? 'skipped' : 'done')
 
-await patchWorkspaceConfig({ bundleUrl, embedUrl, ws, slug })
-await cleanupOrphanBundles()
-await versionSnapshot()
+  bundleUrl = await uploadBundle();    mark('bundle', 'done')
+  embedUrl = await uploadEmbed();      mark('embed', embedUrl ? 'done' : 'skipped')
 
-console.log()
-console.log(`✓ Deploy complete. App is live at <your-platform>/apps/${slug}`)
+  const ws = await api('GET', `/workspaces/${PRISMEAI_WORKSPACE_ID}`)
+  slug = process.env.PRISMEAI_BUNDLE_SLUG || ws?.slug || PRISMEAI_WORKSPACE_ID
+
+  await patchWorkspaceConfig({ bundleUrl, embedUrl, ws, slug });  mark('config', 'done')
+  await cleanupOrphanBundles();        mark('cleanup', SKIP_BUNDLE_CLEANUP ? 'skipped' : 'done')
+  await versionSnapshot();             mark('version', SKIP_VERSION_SNAPSHOT ? 'skipped' : 'done')
+
+  console.log()
+  console.log(`✓ Deploy complete. App is live at <your-platform>/apps/${slug}`)
+  printSummary()
+} catch (err) {
+  exitCode = 1
+  // First step still 'pending' is the one that threw.
+  const failedKey = steps.find(s => status[s.key] === 'pending')?.key || 'unknown'
+  mark(failedKey, 'failed')
+  const errMsg = (err?.message || String(err)).split('\n').slice(0, 5).join('\n  ')
+
+  console.error()
+  console.error(`✗ Deploy FAILED at step: ${steps.find(s => s.key === failedKey)?.label || failedKey}`)
+  console.error(`  ${errMsg}`)
+  console.error()
+  console.error(`Next action:`)
+  console.error(`  ${RECOVERY[failedKey] || 'Re-run npm run deploy.'}`)
+  printSummary()
+} finally {
+  process.exit(exitCode)
+}

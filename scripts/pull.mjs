@@ -69,15 +69,20 @@ async function fetchWithRetry(url, init = {}) {
     }
     const controller = new AbortController()
     const timer = setTimeout(() => controller.abort(), HTTP_TIMEOUT_MS)
+    let res
     try {
-      const res = await fetch(url, { ...init, signal: controller.signal })
-      clearTimeout(timer)
-      if (res.status >= 500) { lastError = `${res.status} ${res.statusText}`; continue }
-      return res
+      res = await fetch(url, { ...init, signal: controller.signal })
     } catch (err) {
       clearTimeout(timer)
       lastError = err?.name === 'AbortError' ? `timeout after ${HTTP_TIMEOUT_MS}ms` : (err?.message || String(err))
+      continue
     }
+    clearTimeout(timer)
+    // 4xx — return immediately, caller will fail() (no retry on deterministic errors)
+    if (res.status >= 400 && res.status < 500) return res
+    // 5xx — retry
+    if (res.status >= 500) { lastError = `${res.status} ${res.statusText}`; continue }
+    return res
   }
   fail(`${init.method || 'GET'} ${url} failed after ${HTTP_MAX_RETRIES + 1} attempts: ${lastError}`)
 }
