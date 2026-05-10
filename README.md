@@ -1,8 +1,8 @@
-# Prisme.ai App Starter
+# `starter-spa`
 
-Build full-stack apps for Prisme.ai locally in VS Code, then deploy them to a workspace with one command.
+> Build a Prisme.ai SPA (React frontend + backend automations) locally in VS Code, deploy to a workspace with one command.
 
-This starter is the same React + Radix UI + Tailwind template the in-platform Builder seeds when you click **+ Page → New SPA**, lifted into a normal repo so you can edit it in your favorite editor, version it on GitHub, and ship it via CI. The deploy script is byte-compatible with the Builder's own **Deploy** button — your repo and the in-platform Builder stay in sync.
+This is the **SPA starter** in the [Prisme.ai starter family](#related-starters). It ships the same React + Radix UI + Tailwind template the in-platform Builder seeds when you click **+ Page → New SPA**, lifted into a normal repo so you can edit it in your favorite editor, version it on GitHub, and ship it via CI. The deploy script is byte-compatible with the Builder's own **Deploy** button — your repo and the in-platform Builder stay in sync.
 
 ---
 
@@ -372,6 +372,19 @@ See `TODO.md` for a prioritized roadmap.
 - **Calling other backends**: install named backends in the platform and read them from the `backends` prop instead of hardcoding slugs.
 - **Streaming responses**: subscribe to multiple event types via `events.on(...)`; backends can emit progress events and a final `*.completed`.
 - **CI**: add a GitHub Action that runs `npm run release` on push to `main`, with the access token in repo secrets.
+
+---
+
+## Related starters
+
+This is part of the [`prismeai/starter-*`](https://github.com/orgs/prismeai/repositories?q=starter-) family:
+
+| Repo | What it's for |
+|---|---|
+| **`prismeai/starter-spa`** (this one) | React SPA + DSUL automations — full UI for end users |
+| `prismeai/starter-mcp` *(planned)* | Workspace exposing automations as MCP tools, no UI |
+| `prismeai/starter-webhooks` *(planned)* | Workspace with webhook-triggered automations only |
+| `prismeai/starter-agent` *(planned)* | Agent-factory style workspace for LLM agents |
 
 ---
 
