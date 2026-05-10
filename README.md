@@ -200,6 +200,7 @@ The deploy script mirrors the **in-builder Deploy button** (`BundlePublishModal.
 | 2 | **Bundle upload** | `POST /workspaces/:id/files` (`public=true`) — returns the CDN URL. | — |
 | 3 | **embed.js upload** | Fetches `${PRISMEAI_PLATFORM_URL}/embed.js` and uploads as a public file. Only needed for 3rd-party `<script>` embedding. | unset `PRISMEAI_PLATFORM_URL` |
 | 4 | **Patch workspace config** | `PATCH /workspaces/:id` writes `config.value.bundles[<slug>] = { bundle, embed?, version, name, builtAt }`. **This is the live pointer `AppRenderer` reads on every page load.** | — |
+| 4b | **Cleanup orphan bundle/embed files** | After PATCH, lists all public `bundle.js` / `embed.js` files; deletes any not currently referenced in `bundles[*]`. Stops storage growth. | `PRISMEAI_SKIP_BUNDLE_CLEANUP=true` |
 | 5 | **Version snapshot** | `POST /workspaces/:id/versions` creates a Prisme.ai workspace version. | `PRISMEAI_SKIP_VERSION_SNAPSHOT=true` |
 
 ### Pulling workspace state → local
@@ -231,6 +232,7 @@ After deploy, hard-reload your browser to bypass any cached bundle.
 | `PRISMEAI_APP_VERSION` | no | Version label written to workspace config (default `1.0.0`) |
 | `PRISMEAI_SKIP_AUTOMATIONS_SYNC` | no | `true` to skip step 0 |
 | `PRISMEAI_SKIP_SOURCE_SYNC` | no | `true` to skip step 1 |
+| `PRISMEAI_SKIP_BUNDLE_CLEANUP` | no | `true` to keep orphan bundle/embed files (skip step 4b) |
 | `PRISMEAI_SKIP_VERSION_SNAPSHOT` | no | `true` to skip step 5 |
 
 ---

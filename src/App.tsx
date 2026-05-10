@@ -106,12 +106,15 @@ function HomePage() {
     <div className="space-y-8">
       <div className="text-center space-y-3">
         <h1 className="text-3xl font-bold tracking-tight text-foreground">
-          Welcome to your Prisme.ai App
+          Welcome to your Prisme.ai App — v2
         </h1>
         <p className="text-muted-foreground max-w-lg mx-auto">
           Edit <code className="text-xs bg-secondary px-1 py-0.5 rounded">src/App.tsx</code> to start
           building. Use the tabs above to see how to call your workspace via WebSocket events
           and REST webhooks.
+        </p>
+        <p className="text-xs text-green-600 dark:text-green-400 font-mono">
+          [updated via npm run release]
         </p>
       </div>
 

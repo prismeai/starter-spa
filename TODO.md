@@ -35,11 +35,11 @@ These cause silent data loss, security exposure, or unrecoverable inconsistency.
 - **Symptoms**: Deploy "succeeds halfway"; subsequent re-runs accumulate orphan files; rollback impossible.
 - **Approach**: Two-phase commit pattern — stage all uploads first (collect URLs without touching config), then do the config PATCH last as the atomic swap. On any failure before PATCH, delete the staged files. On PATCH failure, keep staged files (next deploy can reuse).
 
-### 5. Bundle file accumulation cleanup
+### 5. Bundle file accumulation cleanup ✅ done (v0.1)
 
 - **Why**: Each deploy uploads `<random>.bundle.js` and old ones stay forever. Workspace storage grows unbounded.
 - **Symptoms**: After 100 deploys, the workspace has 100 dead bundle files. Hits storage limits or makes file-list slow.
-- **Approach**: After successful config PATCH, list all files, find ones matching `*.bundle.js` not equal to current `bundles[*].bundle`, and delete. Alternatively: an `npm run prune` script run on demand.
+- **Status v0.1**: Step 4b in `deploy.mjs` runs after config PATCH. Lists all public `bundle.js` / `embed.js` files; deletes any not in current `bundles[*]`. Skip flag: `PRISMEAI_SKIP_BUNDLE_CLEANUP=true`.
 
 ### 6. Secret hygiene
 

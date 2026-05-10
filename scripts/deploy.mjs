@@ -54,6 +54,7 @@ const PRISMEAI_APP_VERSION = process.env.PRISMEAI_APP_VERSION || '1.0.0'
 const SKIP_SOURCE_SYNC = process.env.PRISMEAI_SKIP_SOURCE_SYNC === 'true'
 const SKIP_VERSION_SNAPSHOT = process.env.PRISMEAI_SKIP_VERSION_SNAPSHOT === 'true'
 const SKIP_AUTOMATIONS_SYNC = process.env.PRISMEAI_SKIP_AUTOMATIONS_SYNC === 'true'
+const SKIP_BUNDLE_CLEANUP = process.env.PRISMEAI_SKIP_BUNDLE_CLEANUP === 'true'
 
 function fail(msg) {
   console.error(`✗ ${msg}`)
@@ -416,6 +417,52 @@ async function patchWorkspaceConfig({ bundleUrl, embedUrl, ws, slug }) {
 }
 
 // ---------------------------------------------------------------------------
+// 4b. Cleanup orphan bundle / embed files
+//
+// Each deploy uploads a NEW <random>.bundle.js (and optionally embed.js).
+// The platform doesn't dedupe; old files stay in workspace storage forever
+// unless we clean them up. Run AFTER the config PATCH so we know which URLs
+// are still referenced.
+// ---------------------------------------------------------------------------
+
+async function cleanupOrphanBundles() {
+  if (SKIP_BUNDLE_CLEANUP) {
+    console.log('· bundle cleanup skipped (PRISMEAI_SKIP_BUNDLE_CLEANUP=true)')
+    return
+  }
+
+  console.log(`→ Cleaning up orphan bundle/embed files`)
+
+  // Fetch the workspace fresh to get the canonical current bundles map
+  const ws = await api('GET', `/workspaces/${PRISMEAI_WORKSPACE_ID}`)
+  const bundles = ws?.config?.value?.bundles || {}
+  const referenced = new Set()
+  for (const entry of Object.values(bundles)) {
+    if (entry?.bundle) referenced.add(entry.bundle)
+    if (entry?.embed) referenced.add(entry.embed)
+  }
+
+  // List public files (bundles + embeds are uploaded with public=true)
+  const list = await api('GET', `/workspaces/${PRISMEAI_WORKSPACE_ID}/files?limit=1000`)
+  const files = Array.isArray(list) ? list : list?.result || []
+  const candidates = files.filter(f =>
+    f.public === true &&
+    (f.name === 'bundle.js' || f.name === 'embed.js')
+  )
+
+  let deleted = 0, kept = 0
+  for (const f of candidates) {
+    if (referenced.has(f.url)) {
+      kept++
+      continue
+    }
+    await api('DELETE', `/workspaces/${PRISMEAI_WORKSPACE_ID}/files/${encodeURIComponent(f.id)}`)
+    deleted++
+  }
+  console.log(`  kept=${kept} deleted=${deleted}`)
+}
+
+// ---------------------------------------------------------------------------
 // 5. Version snapshot (parity with buildAndDeploy step 6)
 // ---------------------------------------------------------------------------
 
@@ -447,6 +494,7 @@ const ws = await api('GET', `/workspaces/${PRISMEAI_WORKSPACE_ID}`)
 const slug = process.env.PRISMEAI_BUNDLE_SLUG || ws?.slug || PRISMEAI_WORKSPACE_ID
 
 await patchWorkspaceConfig({ bundleUrl, embedUrl, ws, slug })
+await cleanupOrphanBundles()
 await versionSnapshot()
 
 console.log()

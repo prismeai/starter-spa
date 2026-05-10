@@ -8,5 +8,7 @@ do:
       name: result
       value:
         status: ok
+        version: v2
+        message: hello from the updated automation
         timestamp: '{{run.date}}'
 output: '{{result}}'
