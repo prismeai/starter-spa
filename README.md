@@ -75,7 +75,14 @@ You can list, see days-until-expiry, and revoke your tokens from the same screen
 └── vite.config.ts
 ```
 
-The DSUL artifacts at root (`automations/`, `index.yml`, `security.yml`, `imports/`) match the workspace export format 1:1 — the in-builder Builder's "Import Workspace" feature can ingest a zip of these directly. The React app stays under `src/` because that's both the universal JS convention and the path the platform's in-builder Builder hardcodes as the SPA entry.
+**Two independent transport channels — by design:**
+
+| What | How it gets to a workspace |
+|---|---|
+| DSUL artifacts (`automations/`, `index.yml`, `security.yml`, `imports/`) | **Workspace export/import zip** — these match the export format 1:1. Zip them up, drop into the in-builder Builder's "Import Workspace", done. Also pushed by `npm run deploy`. |
+| React source (`src/`, `package.json`, configs) | **Git + npm** — clone the repo, `npm install`, edit, `npm run deploy`. The workspace import zip does NOT carry these (and shouldn't — large source trees don't belong in a portable DSUL archive). |
+
+That's why `src/` is a normal JS layout (universal convention + the in-builder Builder hardcodes `src/App.tsx` as the SPA entry) while DSUL stays at root (zip-and-import compatible). The deploy script bridges them: pushes DSUL via the workspace API AND uploads each `src/*` file as `metadata.type=source` so the in-builder Builder's sandbox sees the same code.
 
 You should normally only touch:
 
