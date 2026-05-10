@@ -219,6 +219,24 @@ Use after a teammate edited automations or source files in the in-builder Builde
 
 After deploy, hard-reload your browser to bypass any cached bundle.
 
+### Conflict detection (since v0.1)
+
+Before doing anything, the deploy script checks `.prismeai/last-pull.json` (written by `npm run pull`) against the workspace's current state. If anything changed remotely since your last pull — automation `checksum` or source file `metadata.hash` — the deploy is **refused** with a list of conflicting items:
+
+```
+✗ Deploy refused: 2 item(s) changed remotely since your last pull.
+    ~ automations/v1/status.yml — modified remotely since last pull
+    + src/NewComponent.tsx — added remotely since last pull
+```
+
+Resolution paths:
+- `npm run pull` → fetch the remote changes, `git diff` to review, then `npm run release`
+- `PRISMEAI_FORCE=true npm run release` → ⚠ overwrite remote changes with your local copy
+- `npm run deploy -- --force` → same as above but skips the build step
+- *(Heads-up: `npm run release -- --force` does NOT work — npm consumes `--force` as its own flag. Use the env var instead.)*
+
+When **no manifest** exists (first deploy from a clean clone), conflict detection is skipped silently. When the manifest's `workspaceId` doesn't match `PRISMEAI_WORKSPACE_ID`, the deploy refuses with an explanation.
+
 ### Environment variables
 
 | Var | Required | Purpose |

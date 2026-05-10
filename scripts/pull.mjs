@@ -78,7 +78,15 @@ async function ensureDir(filePath) {
 
 console.log(`Pulling from ${API_BASE}, workspace=${PRISMEAI_WORKSPACE_ID}`)
 
-const manifest = { pulledAt: new Date().toISOString(), automations: {}, sourceFiles: {} }
+// Manifest format: server-side hashes only. The deploy script compares these
+// against the workspace's CURRENT `metadata.hash` (source files) and
+// `checksum` (automations) to detect remote edits since the last pull.
+const manifest = {
+  pulledAt: new Date().toISOString(),
+  workspaceId: PRISMEAI_WORKSPACE_ID,
+  automations: {},   // slug → server checksum
+  sourceFiles: {},   // path → server metadata.hash
+}
 
 // ---------------------------------------------------------------------------
 // 1. Pull automations
@@ -113,7 +121,9 @@ if (!SKIP_AUTOMATIONS) {
       const filePath = path.join(AUTOMATIONS_DIR, `${slug}.yml`)
       await ensureDir(filePath)
       await writeFile(filePath, yamlContent, 'utf8')
-      manifest.automations[slug] = sha256(yamlContent)
+      // Use the server's checksum from the summary view (set at server-side
+      // on every automation update). This is what conflict detection compares.
+      manifest.automations[slug] = ws.automations[slug]?.checksum
       console.log(`  ← automations/${slug}.yml`)
     }
   }
@@ -141,7 +151,8 @@ if (!SKIP_SOURCE) {
       const abs = path.join(ROOT, relPath)
       await ensureDir(abs)
       await writeFile(abs, content, 'utf8')
-      manifest.sourceFiles[relPath] = sha256(content)
+      // Server's metadata.hash — set by deploy on upload, refreshed on Builder save
+      manifest.sourceFiles[relPath] = f.metadata?.hash
       console.log(`  ← ${relPath}`)
     }
   }

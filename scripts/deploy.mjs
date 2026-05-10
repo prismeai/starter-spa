@@ -55,6 +55,7 @@ const SKIP_SOURCE_SYNC = process.env.PRISMEAI_SKIP_SOURCE_SYNC === 'true'
 const SKIP_VERSION_SNAPSHOT = process.env.PRISMEAI_SKIP_VERSION_SNAPSHOT === 'true'
 const SKIP_AUTOMATIONS_SYNC = process.env.PRISMEAI_SKIP_AUTOMATIONS_SYNC === 'true'
 const SKIP_BUNDLE_CLEANUP = process.env.PRISMEAI_SKIP_BUNDLE_CLEANUP === 'true'
+const FORCE = process.argv.includes('--force') || process.env.PRISMEAI_FORCE === 'true'
 
 function fail(msg) {
   console.error(`✗ ${msg}`)
@@ -164,6 +165,95 @@ async function collectSourceFiles() {
     !f.rel.endsWith('.yml') &&
     !f.rel.endsWith('.yaml')
   )
+}
+
+// ---------------------------------------------------------------------------
+// Pre-flight: conflict detection vs .prismeai/last-pull.json
+//
+// Refuses to deploy if remote source files / automations changed since the
+// last `npm run pull`. Compares server-side hashes (file metadata.hash and
+// automation checksum) against the manifest. Bypassed with --force or
+// PRISMEAI_FORCE=true. Skipped silently when no manifest exists (first-time
+// deploy from a clean clone).
+// ---------------------------------------------------------------------------
+
+const MANIFEST_PATH = path.join(ROOT, '.prismeai/last-pull.json')
+
+async function detectConflicts() {
+  let manifest
+  try {
+    const raw = await readFile(MANIFEST_PATH, 'utf8')
+    manifest = JSON.parse(raw)
+  } catch {
+    console.log('· no .prismeai/last-pull.json — first deploy, conflict detection skipped')
+    return
+  }
+
+  if (manifest.workspaceId && manifest.workspaceId !== PRISMEAI_WORKSPACE_ID) {
+    fail(
+      `Manifest workspace (${manifest.workspaceId}) doesn't match current PRISMEAI_WORKSPACE_ID (${PRISMEAI_WORKSPACE_ID}).\n` +
+      `Run \`rm .prismeai/last-pull.json && npm run pull\` to re-sync, or set PRISMEAI_WORKSPACE_ID to match.`
+    )
+  }
+
+  console.log(`→ Conflict detection (vs .prismeai/last-pull.json)`)
+
+  const ws = await api('GET', `/workspaces/${PRISMEAI_WORKSPACE_ID}`)
+  const remoteAutomations = ws?.automations || {}
+
+  const conflicts = []
+
+  // Automations: compare server's checksum against manifest
+  const manifestAutoSlugs = new Set(Object.keys(manifest.automations || {}))
+  for (const slug of Object.keys(remoteAutomations)) {
+    const remoteChecksum = remoteAutomations[slug]?.checksum
+    const manifestChecksum = manifest.automations?.[slug]
+    if (!manifestAutoSlugs.has(slug)) {
+      conflicts.push(`+ automations/${slug}.yml — added remotely since last pull`)
+    } else if (remoteChecksum && manifestChecksum && remoteChecksum !== manifestChecksum) {
+      conflicts.push(`~ automations/${slug}.yml — modified remotely since last pull`)
+    }
+  }
+
+  // Source files: compare server's metadata.hash against manifest
+  const params = new URLSearchParams({ limit: '1000', 'metadata.type': 'source' })
+  const list = await api('GET', `/workspaces/${PRISMEAI_WORKSPACE_ID}/files?${params}`)
+  const files = Array.isArray(list) ? list : list?.result || []
+  const manifestSourcePaths = new Set(Object.keys(manifest.sourceFiles || {}))
+
+  for (const f of files) {
+    const relPath = f.metadata?.path || f.name
+    if (!relPath) continue
+    const remoteHash = f.metadata?.hash
+    const manifestHash = manifest.sourceFiles?.[relPath]
+    if (!manifestSourcePaths.has(relPath)) {
+      conflicts.push(`+ ${relPath} — added remotely since last pull`)
+    } else if (remoteHash && manifestHash && remoteHash !== manifestHash) {
+      conflicts.push(`~ ${relPath} — modified remotely since last pull`)
+    }
+  }
+
+  if (conflicts.length === 0) {
+    console.log('  ✓ no remote changes since last pull')
+    return
+  }
+
+  if (FORCE) {
+    console.log(`  ⚠ ${conflicts.length} remote change(s) detected — proceeding anyway (--force):`)
+    for (const c of conflicts) console.log('    ' + c)
+    return
+  }
+
+  console.error()
+  console.error(`✗ Deploy refused: ${conflicts.length} item(s) changed remotely since your last pull.`)
+  for (const c of conflicts) console.error('    ' + c)
+  console.error()
+  console.error(`To resolve, choose one:`)
+  console.error(`  • npm run pull                            # fetch remote changes, review with git diff, then npm run release`)
+  console.error(`  • PRISMEAI_FORCE=true npm run release     # ⚠ overwrite remote changes with your local copy`)
+  console.error(`  • npm run deploy -- --force               # same, but skips the build step`)
+  console.error(`    (note: \`npm run release -- --force\` does NOT work — npm consumes --force as its own flag)`)
+  process.exit(1)
 }
 
 // ---------------------------------------------------------------------------
@@ -485,6 +575,7 @@ async function versionSnapshot() {
 
 console.log(`Deploying to ${API_BASE}, workspace=${PRISMEAI_WORKSPACE_ID}`)
 
+await detectConflicts()
 await syncAutomations()
 await syncSourceFiles()
 const bundleUrl = await uploadBundle()

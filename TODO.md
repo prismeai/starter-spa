@@ -17,11 +17,12 @@ These cause silent data loss, security exposure, or unrecoverable inconsistency.
 - **Approach**: Mirror `syncFilesToWorkspace` in reverse — `GET /workspaces/:id/files?metadata.type=source`, fetch each `.url`, write to local `metadata.path`. Print summary `pulled=X new=Y modified=Z`. Refuse to overwrite locally-modified files (compare against last-pull manifest in `.prismeai/last-pull.json`).
 - **Status v0.1**: Pull script exists (`scripts/pull.mjs`), covers automations + source files, writes manifest. **NOT done**: locally-modified detection (overwrites unconditionally — manifest is written but not enforced).
 
-### 2. Conflict detection on deploy
+### 2. Conflict detection on deploy ✅ done (v0.1)
 
 - **Why**: Without it, `npm run deploy` is a destructive operation that pretends to be additive.
 - **Symptoms**: Two devs (or dev + Builder user) make concurrent changes; whoever deploys second wins, no record of the loss.
-- **Approach**: Stamp each pull with a manifest `{path → hash}`. On deploy, re-list workspace files; if any hash for an existing path doesn't match the last-pull manifest, refuse with `--force` opt-out. Borrow optimistic-locking pattern from git fetch/push.
+- **Status v0.1**: Pre-flight in `deploy.mjs` reads `.prismeai/last-pull.json` and compares the server's `metadata.hash` (source files) and `checksum` (automations) against the manifest. Refuses on divergence with a list of conflicting items + 3 resolution paths. Override: `--force` flag on `deploy` directly OR `PRISMEAI_FORCE=true` env var (works for `release` too). Exit code 1 on refusal — CI-safe.
+- **Verified**: 4 test scenarios — no manifest skipped silently; clean pull + deploy passes; remote PATCH detected and refused; --force overrides.
 
 ### 3. HTTP timeouts + retries
 
