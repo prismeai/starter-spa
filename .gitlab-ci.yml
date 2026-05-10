@@ -1,0 +1,48 @@
+# GitLab CI deploy template — adapt to your branch model.
+#
+# Set these in Settings → CI/CD → Variables (mark them MASKED + PROTECTED):
+#   PRISMEAI_API_URL
+#   PRISMEAI_ACCESS_TOKEN
+#   PRISMEAI_WORKSPACE_ID
+
+stages:
+  - deploy
+
+.deploy_template: &deploy_template
+  image: node:20-alpine
+  stage: deploy
+  cache:
+    key:
+      files: [package-lock.json]
+    paths: [node_modules]
+  before_script:
+    - npm ci --no-audit --no-fund
+  timeout: 10 minutes
+
+deploy:
+  <<: *deploy_template
+  script:
+    - npm run release
+  only:
+    - main
+
+# Branch-based env routing example. Uncomment + adjust:
+#
+# deploy:staging:
+#   <<: *deploy_template
+#   script: npm run release
+#   variables:
+#     PRISMEAI_API_URL: $PRISMEAI_STAGING_API_URL
+#     PRISMEAI_ACCESS_TOKEN: $PRISMEAI_STAGING_ACCESS_TOKEN
+#     PRISMEAI_WORKSPACE_ID: $PRISMEAI_STAGING_WORKSPACE_ID
+#   only: [develop]
+#
+# deploy:production:
+#   <<: *deploy_template
+#   script: npm run release
+#   variables:
+#     PRISMEAI_API_URL: $PRISMEAI_PROD_API_URL
+#     PRISMEAI_ACCESS_TOKEN: $PRISMEAI_PROD_ACCESS_TOKEN
+#     PRISMEAI_WORKSPACE_ID: $PRISMEAI_PROD_WORKSPACE_ID
+#   only: [main]
+#   when: manual    # require human approval before prod

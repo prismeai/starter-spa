@@ -1,0 +1,49 @@
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      env:
+        description: Environment to deploy to
+        type: choice
+        options: [staging, production]
+        default: staging
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+
+      - run: npm ci
+
+      - run: npm run release
+        env:
+          # Set these in repo Settings → Secrets and variables → Actions:
+          PRISMEAI_API_URL: ${{ secrets.PRISMEAI_API_URL }}
+          PRISMEAI_ACCESS_TOKEN: ${{ secrets.PRISMEAI_ACCESS_TOKEN }}
+          PRISMEAI_WORKSPACE_ID: ${{ secrets.PRISMEAI_WORKSPACE_ID }}
+          # Optional — uncomment if you use them:
+          # PRISMEAI_PLATFORM_URL: ${{ secrets.PRISMEAI_PLATFORM_URL }}
+          # PRISMEAI_BUNDLE_SLUG: ${{ secrets.PRISMEAI_BUNDLE_SLUG }}
+          # PRISMEAI_APP_VERSION: ${{ github.sha }}
+
+  # Branch-based env routing example: if you want push-to-develop → staging,
+  # push-to-main → production, duplicate the deploy job and gate each on the
+  # matching branch:
+  #
+  # deploy-staging:
+  #   if: github.ref == 'refs/heads/develop'
+  #   ...
+  # deploy-production:
+  #   if: github.ref == 'refs/heads/main'
+  #   ...

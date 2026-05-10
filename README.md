@@ -381,6 +381,23 @@ cmdkey /generic:prismeai-sandbox /user:%USERNAME% /pass
 
 ---
 
+## CI/CD
+
+Two recipes ship with the starter:
+
+- **GitHub Actions** — `.github/workflows/deploy.yml`. Triggers on push to `main` (and via manual `workflow_dispatch`). Uses Node 20, caches npm, runs `npm run release`.
+- **GitLab CI** — `.gitlab-ci.yml`. Same shape. Includes commented branch-based env routing (`develop` → staging, `main` → production with manual approval).
+
+### Setting secrets
+
+| Where | How |
+|---|---|
+| GitHub | Repo **Settings → Secrets and variables → Actions → New repository secret** |
+| GitLab | Project **Settings → CI/CD → Variables** — mark them **Masked** and **Protected** |
+| Both | Add `PRISMEAI_API_URL`, `PRISMEAI_ACCESS_TOKEN`, `PRISMEAI_WORKSPACE_ID`. Optional: `PRISMEAI_PLATFORM_URL`, `PRISMEAI_BUNDLE_SLUG` |
+
+The token used in CI should be a service-account or shared-account access token with explicit expiry. Rotate quarterly. Don't reuse a personal access token.
+
 ## Related starters
 
 This is part of the [`prismeai/starter-*`](https://github.com/orgs/prismeai/repositories?q=starter-) family:
