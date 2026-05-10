@@ -1,0 +1,161 @@
+#!/usr/bin/env node
+/**
+ * Pull workspace artifacts → local repo.
+ *
+ * The inverse of npm run deploy. Useful when:
+ *   - A teammate edited an automation in the in-builder Builder
+ *   - Source files were modified server-side
+ *   - You want to bootstrap from an existing workspace
+ *
+ *   1. GET /v2/workspaces/:id (returns full DSUL incl. automations as object)
+ *      → write each automation to automations/<slug>.yml
+ *
+ *   2. GET /v2/workspaces/:id/files?metadata.type=source
+ *      → for each, download URL → write to local at metadata.path
+ *
+ *   3. Write .prisme/last-pull.json with hash manifest (for future conflict
+ *      detection in deploy — not yet enforced in v0.1).
+ *
+ * Required env: same as deploy.mjs (PRISME_API_URL, PRISME_ACCESS_TOKEN, PRISME_WORKSPACE_ID).
+ *
+ * ⚠ This OVERWRITES local files without confirmation. Commit your local
+ *   changes first, then `git diff` after pull to review what was fetched.
+ */
+
+import 'dotenv/config'
+import { readFile, writeFile, mkdir, stat } from 'node:fs/promises'
+import { createHash } from 'node:crypto'
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
+import yaml from 'js-yaml'
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url))
+const ROOT = path.resolve(__dirname, '..')
+const AUTOMATIONS_DIR = path.join(ROOT, 'automations')
+
+// Sanity: AUTOMATIONS_DIR resolved at root
+const MANIFEST_PATH = path.join(ROOT, '.prisme/last-pull.json')
+
+const { PRISME_API_URL, PRISME_ACCESS_TOKEN, PRISME_API_KEY, PRISME_WORKSPACE_ID } = process.env
+const SKIP_AUTOMATIONS = process.env.PRISME_SKIP_AUTOMATIONS_SYNC === 'true'
+const SKIP_SOURCE = process.env.PRISME_SKIP_SOURCE_SYNC === 'true'
+
+function fail(msg) {
+  console.error(`✗ ${msg}`)
+  process.exit(1)
+}
+
+if (!PRISME_API_URL) fail('Missing PRISME_API_URL in .env')
+if (!PRISME_ACCESS_TOKEN && !PRISME_API_KEY) fail('Missing PRISME_ACCESS_TOKEN or PRISME_API_KEY in .env')
+if (!PRISME_WORKSPACE_ID) fail('Missing PRISME_WORKSPACE_ID in .env')
+
+const API_BASE = PRISME_API_URL.replace(/\/$/, '')
+const AUTH_HEADERS = PRISME_ACCESS_TOKEN
+  ? { Authorization: `Bearer ${PRISME_ACCESS_TOKEN}` }
+  : { 'x-prismeai-api-key': PRISME_API_KEY }
+
+async function api(method, pathSuffix) {
+  const res = await fetch(`${API_BASE}${pathSuffix}`, { method, headers: AUTH_HEADERS })
+  if (!res.ok) fail(`${method} ${pathSuffix} → ${res.status} ${res.statusText}\n${await res.text().catch(() => '')}`)
+  if (res.status === 204) return null
+  const ct = res.headers.get('content-type') || ''
+  return ct.includes('application/json') ? res.json() : res.text()
+}
+
+async function fetchText(url) {
+  const res = await fetch(url, { headers: AUTH_HEADERS })
+  if (!res.ok) fail(`GET ${url} → ${res.status}`)
+  return res.text()
+}
+
+function sha256(content) {
+  return createHash('sha256').update(content, 'utf8').digest('hex')
+}
+
+async function ensureDir(filePath) {
+  await mkdir(path.dirname(filePath), { recursive: true })
+}
+
+console.log(`Pulling from ${API_BASE}, workspace=${PRISME_WORKSPACE_ID}`)
+
+const manifest = { pulledAt: new Date().toISOString(), automations: {}, sourceFiles: {} }
+
+// ---------------------------------------------------------------------------
+// 1. Pull automations
+// ---------------------------------------------------------------------------
+
+// Server-managed fields the API returns but that mustn't go back into YAML
+// (they're recomputed/owned by the server).
+const SERVER_FIELDS = new Set(['events', 'updatedBy', 'updatedAt', 'createdBy', 'createdAt', 'checksum'])
+
+function stripServerFields(obj) {
+  const out = {}
+  for (const [k, v] of Object.entries(obj)) {
+    if (!SERVER_FIELDS.has(k)) out[k] = v
+  }
+  return out
+}
+
+if (!SKIP_AUTOMATIONS) {
+  console.log(`→ Fetching workspace automations`)
+  // /workspaces/:id returns SUMMARY automations (no `do`/`output`).
+  // We need per-slug GETs for the full body.
+  const ws = await api('GET', `/workspaces/${PRISME_WORKSPACE_ID}`)
+  const slugs = Object.keys(ws?.automations || {})
+
+  if (slugs.length === 0) {
+    console.log('  (none)')
+  } else {
+    for (const slug of slugs) {
+      const full = await api('GET', `/workspaces/${PRISME_WORKSPACE_ID}/automations/${encodeURIComponent(slug)}`)
+      const clean = stripServerFields({ slug, ...full })
+      const yamlContent = yaml.dump(clean, { lineWidth: -1, quotingType: "'" })
+      const filePath = path.join(AUTOMATIONS_DIR, `${slug}.yml`)
+      await ensureDir(filePath)
+      await writeFile(filePath, yamlContent, 'utf8')
+      manifest.automations[slug] = sha256(yamlContent)
+      console.log(`  ← automations/${slug}.yml`)
+    }
+  }
+} else {
+  console.log('· automations pull skipped (PRISME_SKIP_AUTOMATIONS_SYNC=true)')
+}
+
+// ---------------------------------------------------------------------------
+// 2. Pull source files (metadata.type=source)
+// ---------------------------------------------------------------------------
+
+if (!SKIP_SOURCE) {
+  console.log(`→ Fetching source files`)
+  const params = new URLSearchParams({ limit: '1000', 'metadata.type': 'source' })
+  const list = await api('GET', `/workspaces/${PRISME_WORKSPACE_ID}/files?${params}`)
+  const files = Array.isArray(list) ? list : list?.result || []
+
+  if (files.length === 0) {
+    console.log('  (none)')
+  } else {
+    for (const f of files) {
+      const relPath = f.metadata?.path || f.name
+      if (!relPath) continue
+      const content = await fetchText(f.url)
+      const abs = path.join(ROOT, relPath)
+      await ensureDir(abs)
+      await writeFile(abs, content, 'utf8')
+      manifest.sourceFiles[relPath] = sha256(content)
+      console.log(`  ← ${relPath}`)
+    }
+  }
+} else {
+  console.log('· source pull skipped (PRISME_SKIP_SOURCE_SYNC=true)')
+}
+
+// ---------------------------------------------------------------------------
+// 3. Manifest (for future conflict detection)
+// ---------------------------------------------------------------------------
+
+await ensureDir(MANIFEST_PATH)
+await writeFile(MANIFEST_PATH, JSON.stringify(manifest, null, 2), 'utf8')
+
+console.log()
+console.log(`✓ Pull complete. Review with: git status && git diff`)
+console.log(`  Manifest: .prisme/last-pull.json (used by future conflict detection)`)

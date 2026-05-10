@@ -1,0 +1,11 @@
+slug: on-app-greeting-requested
+name: On App Greeting Requested
+description: 'Async: listens for "app.greeting.requested" and responds with "app.greeting.completed"'
+when:
+  events:
+    - app.greeting.requested
+do:
+  - emit:
+      event: app.greeting.completed
+      payload:
+        message: Hello {{app.greeting.requested.name}} from the automation!
