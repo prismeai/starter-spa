@@ -232,6 +232,8 @@ All `.env*` files except `.env.example` are gitignored.
 | `PRISMEAI_API_KEY` | one of these | Org-scoped API key. Sent as `x-prismeai-api-key`. Use access token instead when possible. |
 | `PRISMEAI_WORKSPACE_ID` | yes | Short ID of the target workspace (e.g. `B4eoHS6`) |
 | `PRISMEAI_PLATFORM_URL` | no | UI host (e.g. `https://app.acme.example.com`). Only needed for embed.js. |
+| `PRISMEAI_DISPLAY_MODE` | no | `standalone` to serve the app full-viewport (no platform chrome) at `/p/<slug>`. Default (unset) = in-platform `/apps/<slug>`. |
+| `PRISMEAI_PUBLIC` | no | `true` (standalone only) to open the app without login — renderer skips `/v2/me`, `user` is `null`. |
 | `PRISMEAI_BUNDLE_SLUG` | no | Override the bundles[<key>] (default: workspace slug) |
 | `PRISMEAI_APP_VERSION` | no | Version label written to workspace config (default `1.0.0`) |
 | `PRISMEAI_HTTP_TIMEOUT` | no | Per-request timeout in ms (default `30000`) |
@@ -244,6 +246,37 @@ All `.env*` files except `.env.example` are gitignored.
 | `PRISMEAI_SKIP_BUNDLE_CLEANUP` | no | `true` to skip step 6 |
 | `PRISMEAI_SKIP_SMOKE` | no | `true` to skip step 7 |
 | `PRISMEAI_SKIP_VERSION_SNAPSHOT` | no | `true` to skip step 8 |
+
+---
+
+## Display mode: in-platform vs standalone (public)
+
+A deployed bundle can be presented two ways. The mode is written into
+`config.value.bundles[<slug>]` at deploy time and read by the platform's
+`AppRenderer` (source of truth: `services/platform/src/types/bundle.ts`).
+
+- **`platform`** (default): wrapped in the Platform Shell (sidebar, top-bar),
+  served at `/apps/<slug>`, behind the platform's auth gate. Best for in-editor
+  / admin features.
+- **`standalone`**: the app owns the whole viewport (no platform chrome),
+  served at `/p/<slug>`. `AppRenderer` redirects `/apps/<slug>` → `/p/<slug>`.
+- **`public: true`** (standalone only): the renderer skips the `/v2/me` call,
+  passes `user: null`, and the `_bundle` endpoint is public — visitors open the
+  app **without signing in**. Ideal for public-facing sites and landing pages.
+  Your app is responsible for gating anything that actually needs a session.
+
+Enable from `.env`:
+
+```bash
+PRISMEAI_DISPLAY_MODE=standalone
+PRISMEAI_PUBLIC=true
+npm run release   # → live at <your-platform-ui>/p/<slug>, no login
+```
+
+> Note: in standalone mode the host still mounts your app inside its own
+> react-router `<Router>`, so do **not** render your own `<BrowserRouter>` /
+> `<HashRouter>` (it throws "Router inside Router"). Drive routing from the
+> hash, or let the host route.
 
 ---
 
@@ -324,13 +357,15 @@ Both ends edit. Treat the **workspace as the source of truth** and **always pull
 
 ## Constraints worth knowing
 
-### Tailwind utility classes
+### Tailwind / CSS
 
-Your bundle does **not** ship CSS. The platform serves a single Tailwind stylesheet that all hosted apps share. **Only utility classes already present in that stylesheet will style your app.** The classes used in this starter (`bg-background`, `text-muted-foreground`, `rounded-md`, the standard color/spacing/layout palette) are guaranteed because they match the platform's own design system. Exotic classes may not render — stick to the standard set or use inline `style={...}`.
+`npm run build` compiles `src/styles/globals.css` with Tailwind and **injects it into the bundle** at runtime (a `<style id="prismeai-app-styles">` appended on load). So your theme overrides, custom utilities, `@keyframes` and `@font-face` ship with the app — the deployed result matches local dev.
+
+> Earlier versions of this starter relied solely on the platform's shared stylesheet, so anything beyond the platform's own utility set rendered unstyled in production. That's fixed: your compiled CSS is bundled. The platform stylesheet still loads too; your injected `<style>` is appended last, so your rules win. Keep the bundle lean — large `@font-face` files are better referenced by URL (CORS-enabled) than base64-embedded.
 
 ### lucide-react icons
 
-The platform pre-loads a curated subset (~250 icons) for tree-shaking. Common ones (`ZapIcon`, `BotIcon`, `GlobeIcon`, `Loader2Icon`, `CheckCircleIcon`, ...) are guaranteed. If you import an icon and it renders as `undefined` at runtime, it isn't in the subset — pick a different one or open a request to add it.
+The platform pre-loads a curated subset (~250 icons) for tree-shaking. Common ones (`ZapIcon`, `BotIcon`, `GlobeIcon`, `Loader2Icon`, `CheckCircleIcon`, ...) are guaranteed. If you import an icon and it renders as `undefined` at runtime (React error #130), it isn't in the subset — pick a different one or open a request to add it. **Brand logos (e.g. `Linkedin`) are typically NOT in the subset** — use an inline `<svg>` for those.
 
 ### Authentication context
 
