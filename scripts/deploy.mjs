@@ -548,15 +548,13 @@ async function patchWorkspaceConfig({ bundleUrl, embedUrl, ws, slug }) {
   const existingBundles = existing.bundles || {}
   const builtAt = new Date().toISOString()
 
-  // Display mode + public access (see services/platform/src/types/bundle.ts):
-  //  - displayMode 'standalone' → app owns the whole viewport (no Platform
-  //    chrome), served at /p/:slug (AppRenderer redirects /apps/:slug → /p/:slug).
-  //  - public true (standalone only) → renderer skips /v2/me, passes user: null,
-  //    and the _bundle endpoint is public → the app opens without any login.
-  //    Ideal for public-facing sites/landing pages.
-  const displayMode = process.env.PRISMEAI_DISPLAY_MODE === 'standalone' ? 'standalone' : 'platform'
-  const isPublic = process.env.PRISMEAI_PUBLIC === 'true' && displayMode === 'standalone'
-  console.log(`  displayMode=${displayMode}${isPublic ? ', public=true' : ''}`)
+  // Public access — see services/platform AppRenderer. The app is served at BOTH
+  // /apps/:slug (Platform Shell) and /p/:slug (standalone); `public` decides login:
+  //  - public true → renderer skips /v2/me, passes user: null, and the _bundle
+  //    endpoint is public → the app opens without any login. Ideal for
+  //    public-facing sites/landing pages.
+  const isPublic = process.env.PRISMEAI_PUBLIC === 'true'
+  console.log(`  public=${isPublic}`)
 
   await api('PATCH', `/workspaces/${PRISMEAI_WORKSPACE_ID}`, {
     body: {
@@ -571,7 +569,6 @@ async function patchWorkspaceConfig({ bundleUrl, embedUrl, ws, slug }) {
               version: PRISMEAI_APP_VERSION,
               name: ws?.name || slug,
               builtAt,
-              displayMode,
               ...(isPublic ? { public: true } : {}),
             },
           },
@@ -802,8 +799,7 @@ try {
   await refreshManifest()  // refresh .prismeai/last-pull.json so subsequent deploys aren't blocked
 
   console.log()
-  const routePrefix = process.env.PRISMEAI_DISPLAY_MODE === 'standalone' ? 'p' : 'apps'
-  console.log(`✓ Deploy complete. App is live at <your-platform>/${routePrefix}/${slug}`)
+  console.log(`✓ Deploy complete. App is live at <your-platform>/apps/${slug} (and /p/${slug})`)
   printSummary()
 } catch (err) {
   exitCode = 1

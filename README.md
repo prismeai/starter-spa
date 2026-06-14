@@ -232,8 +232,7 @@ All `.env*` files except `.env.example` are gitignored.
 | `PRISMEAI_API_KEY` | one of these | Org-scoped API key. Sent as `x-prismeai-api-key`. Use access token instead when possible. |
 | `PRISMEAI_WORKSPACE_ID` | yes | Short ID of the target workspace (e.g. `B4eoHS6`) |
 | `PRISMEAI_PLATFORM_URL` | no | UI host (e.g. `https://app.acme.example.com`). Only needed for embed.js. |
-| `PRISMEAI_DISPLAY_MODE` | no | `standalone` to serve the app full-viewport (no platform chrome) at `/p/<slug>`. Default (unset) = in-platform `/apps/<slug>`. |
-| `PRISMEAI_PUBLIC` | no | `true` (standalone only) to open the app without login — renderer skips `/v2/me`, `user` is `null`. |
+| `PRISMEAI_PUBLIC` | no | `true` to open the app without login — renderer skips `/v2/me`, `user` is `null`. |
 | `PRISMEAI_BUNDLE_SLUG` | no | Override the bundles[<key>] (default: workspace slug) |
 | `PRISMEAI_APP_VERSION` | no | Version label written to workspace config (default `1.0.0`) |
 | `PRISMEAI_HTTP_TIMEOUT` | no | Per-request timeout in ms (default `30000`) |
@@ -249,28 +248,25 @@ All `.env*` files except `.env.example` are gitignored.
 
 ---
 
-## Display mode: in-platform vs standalone (public)
+## In-platform vs standalone (public)
 
-A deployed bundle can be presented two ways. The mode is written into
-`config.value.bundles[<slug>]` at deploy time and read by the platform's
-`AppRenderer` (source of truth: `services/platform/src/types/bundle.ts`).
+Your deployed app is served at **both** URLs, always:
 
-- **`platform`** (default): wrapped in the Platform Shell (sidebar, top-bar),
-  served at `/apps/<slug>`, behind the platform's auth gate. Best for in-editor
-  / admin features.
-- **`standalone`**: the app owns the whole viewport (no platform chrome),
-  served at `/p/<slug>`. `AppRenderer` redirects `/apps/<slug>` → `/p/<slug>`.
-- **`public: true`** (standalone only): the renderer skips the `/v2/me` call,
-  passes `user: null`, and the `_bundle` endpoint is public — visitors open the
-  app **without signing in**. Ideal for public-facing sites and landing pages.
-  Your app is responsible for gating anything that actually needs a session.
+- **`/apps/<slug>`** — wrapped in the Platform Shell (sidebar, top-bar).
+- **`/p/<slug>`** — standalone, full-viewport (no platform chrome).
 
-Enable from `.env`:
+The visitor's URL picks the chrome — you don't have to choose.
+
+- **`public: true`** (`PRISMEAI_PUBLIC=true`): the renderer skips the `/v2/me`
+  call, passes `user: null`, and the `_bundle` endpoint is public — visitors open
+  the app **without signing in**. Ideal for public-facing pages; your app gates
+  anything that actually needs a session.
+
+Enable public (no login) from `.env`:
 
 ```bash
-PRISMEAI_DISPLAY_MODE=standalone
 PRISMEAI_PUBLIC=true
-npm run release   # → live at <your-platform-ui>/p/<slug>, no login
+npm run release   # → reachable at /apps/<slug> and /p/<slug>, no login required
 ```
 
 > Note: in standalone mode the host still mounts your app inside its own
