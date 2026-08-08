@@ -1,14 +1,32 @@
 slug: v1/status
 name: API/v1/Status
-description: 'Sync: HTTP endpoint that returns the current server status'
+description: >-
+  Sync: HTTP webhook that returns the current server status. Protected by the
+  _auth guard -- anonymous callers get 401. To expose it publicly, set
+  allow_public: true in the _auth call below (and deploy with PRISMEAI_PUBLIC=true).
 when:
   endpoint: v1/status
 do:
+  - _auth:
+      output: auth
+  - conditions:
+      '{{auth.error}}':
+        - set:
+            name: $http
+            value:
+              status: '{{auth.status}}'
+        - set:
+            name: result
+            value:
+              error: '{{auth.message}}'
+              code: '{{auth.error}}'
+        - break:
+            scope: automation
   - set:
       name: result
       value:
         status: ok
         version: v2
-        message: hello from the updated automation
+        message: hello {{auth.user_id}}, you are authenticated as {{auth.auth_type}}
         timestamp: '{{run.date}}'
 output: '{{result}}'

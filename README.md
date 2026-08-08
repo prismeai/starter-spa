@@ -49,8 +49,9 @@ You can list, see days-until-expiry, and revoke your tokens from the same screen
 ```
 .
 ├── automations/                      # DSUL automations — pushed to workspace.automations
+│   ├── _auth.yml                     # auth guard — reject anonymous webhook callers (401)
 │   ├── on-app-greeting-requested.yml
-│   └── v1/status.yml
+│   └── v1/status.yml                 # protected webhook — calls _auth first
 ├── imports/                          # DSUL imports — installed apps (empty by default)
 ├── index.yml                         # workspace metadata (optional; created by npm run pull)
 ├── security.yml                      # workspace RBAC (optional; created by npm run pull)
@@ -127,12 +128,25 @@ const res = await fetch(url, {
 const data = await res.json()
 ```
 
-The matching automation:
+The matching automation calls the `_auth` guard first, so anonymous callers get a
+401 instead of a response (see [Webhook auth](#webhook-auth-important) below):
 
 ```yaml
 when:
   endpoint: v1/status
 do:
+  - _auth:                       # reject anonymous callers with 401
+      output: auth
+  - conditions:
+      '{{auth.error}}':
+        - set:
+            name: $http
+            value: { status: '{{auth.status}}' }
+        - set:
+            name: result
+            value: { error: '{{auth.message}}', code: '{{auth.error}}' }
+        - break:
+            scope: automation
   - set:
       name: result
       value: { status: ok, timestamp: '{{run.date}}' }
@@ -148,6 +162,155 @@ events.emit('app.greeting.requested', { name: 'World' })
 ```
 
 The `'source.sessionId': true` filter ensures you only receive events tied to *this* user session. The matching automation listens for `app.greeting.requested` and emits `app.greeting.completed` back.
+
+---
+
+## Webhook auth (important)
+
+**Prisme.ai webhook endpoints are public by default.** A `when: endpoint: v1/status`
+automation is reachable at `POST /workspaces/slug:<slug>/webhooks/v1/status` by
+**anyone with the URL** — no session, no token. The platform does not gate webhooks
+for you; the automation must gate itself.
+
+Early versions of this starter shipped `v1/status` with no guard, so the endpoint
+was open. That was the top piece of feedback we got. **How you gate a webhook is
+your call** — the starter ships one simple, sensible default (the `_auth` guard),
+but it is one option among several (see [Choosing an auth strategy](#choosing-an-auth-strategy)).
+
+The shipped default: every protected webhook calls `_auth` first:
+
+```yaml
+do:
+  - _auth:
+      output: auth
+  - conditions:
+      '{{auth.error}}':
+        - set: { name: $http, value: { status: '{{auth.status}}' } }
+        - set: { name: result, value: { error: '{{auth.message}}', code: '{{auth.error}}' } }
+        - break: { scope: automation }
+  # ...your business logic — auth.user_id / auth.orgSlug / auth.auth_type are now trusted
+```
+
+`_auth` resolves the caller identity into a single `auth` object and rejects
+anonymous callers with `401`. It recognises three caller types:
+
+| `auth.auth_type` | When | `auth.user_id` |
+|---|---|---|
+| `user` | Browser call with `credentials: 'include'`, or a personal access token | the user's id |
+| `apikey` | Org-scoped API key (`x-prismeai-api-key`) | the API key id |
+| `workspace` | Another workspace listed in `config.trusted_source_workspaces` (opt-in) | — |
+
+Because the SPA's `fetch` already sends `credentials: 'include'` (and `Authorization`
+when `sdk.token` is set), a logged-in user sails through; an unauthenticated visitor
+is rejected. **The front end changed nothing — the automation is what closed the hole.**
+
+### Choosing an auth strategy
+
+`_auth` is a deliberately thin "is this caller authenticated?" gate. It is **not**
+the only way, and not always the right one. Pick per endpoint:
+
+| Strategy | Use when | How |
+|---|---|---|
+| **`_auth` guard** (shipped default) | The endpoint should only serve logged-in Prisme.ai users / valid API keys | `- _auth: { output: auth }` then `break` on `{{auth.error}}` |
+| **Public + custom check** | The endpoint is intentionally open, but you still filter by your own rule | `_auth: { allow_public: true }`, then branch on `{{auth.user_id}}` or any business condition |
+| **Centralised RBAC** (access-manager) | You want per-resource permissions / sharing managed in **AI Governance** (roles, scopes, bindings) | `run: { module: access-manager, function: checkAccess, ... }` — advanced; see below |
+| **Bring your own auth** | Auth lives in an external IdP / signed token / HMAC | a `fetch` to your verifier inside the automation; gate on its response |
+
+There is no platform-imposed choice here — a bare webhook is open, and whatever
+guard you write (or don't) is what runs.
+
+### What the platform already hands you
+
+Before you reach for any module, the API gateway has already resolved the caller and
+exposed this in the automation context (this is what `_auth` reads):
+
+| In the automation | Meaning |
+|---|---|
+| `{{user.id}}` | Logged-in user id (empty for anonymous / pure workspace-JWT calls) |
+| `{{session.org.slug}}` | Active organisation slug |
+| `{{session.org.groups}}` | Caller's groups in that org |
+| `{{run.permissions}}` | Permission map from the caller's **AI Governance org role** — e.g. `{ "*": { manage: true } }`, `{ "storage:agents": { read: true } }` |
+| `{{run.scopes}}` | Scope list from the org role or API key — e.g. `["*"]`, `["storage:agents:<id>"]` |
+| `{{run.sourceWorkspaceId}}` | Calling workspace id (for cross-workspace calls) |
+| `{{user.platformRole}}` | `superadmin` / `root` for platform admins |
+
+So even without a module you can already authorise on `{{user.id}}`, the org, or the
+role's permissions/scopes — those come straight from the roles defined in AI Governance.
+
+### Option: centralise RBAC in AI Governance (access-manager)
+
+For real per-resource access control and sharing (a document owned by user A, shared
+with group B, org-readable), the platform ships the **`access-manager`** runtime
+module. `checkAccess` combines two things:
+
+1. **RBAC** — the `run.permissions` / `run.scopes` above (org roles from AI Governance).
+2. **Bindings** — a per-resource ACL entry (`resourceType` + `resourceId` + principal
+   `user|group|org|service_account` + `roleSlug`).
+
+**You do not create or provision any collection for this.** The binding store is owned
+and auto-migrated by the runtime module. You inject a resource through the module's own
+API — the `insertBinding` function — and query/remove with `findBindings` /
+`deleteOneBinding`. Same call surface as `checkAccess`:
+
+```yaml
+  - run:
+      module: access-manager
+      function: insertBinding      # register the resource + its owner in access-manager
+      parameters:
+        data:
+          resourceType: documents
+          resourceId: '{{doc_id}}'
+          principalType: user
+          principalId: '{{user.id}}'
+          roleSlug: owner
+      output: binding
+```
+
+```yaml
+  - run:
+      module: access-manager
+      function: checkAccess
+      parameters:
+        action: read              # read | write | manage | delete
+        resourceType: documents
+        resourceId: '{{doc_id}}'  # omit + list:true to get grantedIds for a list view
+        roles: '{{config.roles}}'
+      output: access
+  # access.granted / access.reason / access.grantedIds / access.isWorkspaceAdmin
+```
+
+The trade-off (why it is opt-in, not the default): **you own the resource lifecycle**.
+Register an `owner` binding when a resource is created, and you cannot delete a
+resource's last binding (a guard against orphaning access). No collection to manage,
+but there is a lifecycle to respect. The `storage` workspace's `_auth` is the full
+reference implementation of this pattern if you go this route. Keep it for when you
+actually have resources to protect — a status endpoint does not need it.
+
+### Leaving an endpoint public on purpose
+
+Public-facing apps (`PRISMEAI_PUBLIC=true`, `user` is `null`) legitimately need open
+endpoints. Opt in explicitly per endpoint — the default stays closed:
+
+```yaml
+  - _auth:
+      allow_public: true      # anonymous callers pass through as auth_type=anonymous
+      output: auth
+```
+
+### Cross-workspace calls
+
+If another workspace calls this one with a workspace JWT, its `user.id` is not
+populated — only `run.sourceWorkspaceId` identifies it. Set
+`allow_trusted_workspaces: true` on the `_auth` call and list the caller's slug in
+`config.trusted_source_workspaces` to accept it. Off by default.
+
+### Guard every new webhook
+
+When you add a `when: endpoint:` automation, add the `_auth` block at the top **unless
+you deliberately want it open** (then use `allow_public: true` so the intent is
+explicit in the YAML). `on-app-greeting-requested.yml` is an event listener
+(`when: events:`), not a webhook — it is only reachable by callers already allowed to
+emit events into the workspace, so it needs no guard.
 
 ---
 
@@ -261,6 +424,11 @@ The visitor's URL picks the chrome — you don't have to choose.
   call, passes `user: null`, and the `_bundle` endpoint is public — visitors open
   the app **without signing in**. Ideal for public-facing pages; your app gates
   anything that actually needs a session.
+
+> A public app has no session user, so any webhook it calls hits `_auth` as an
+> anonymous caller and gets `401`. For the endpoints such an app is allowed to
+> call without login, add `allow_public: true` to their `_auth` block (see
+> [Webhook auth](#webhook-auth-important)). Keep everything else closed.
 
 Enable public (no login) from `.env`:
 
@@ -408,7 +576,7 @@ cmdkey /generic:prismeai-sandbox /user:%USERNAME% /pass
 |---|---|---|
 | `Cannot find module 'react'` at runtime | esbuild bundled React instead of treating it as external | Check `scripts/externals.mjs` — the package must be listed |
 | `XIcon is not defined` | Icon not in the platform's curated lucide subset | Pick another icon |
-| Webhook returns 401 | Missing auth cookie on the request | Add `credentials: 'include'` to the `fetch()` |
+| Webhook returns 401 | The `_auth` guard rejected the caller — either the request carries no session/token, or the endpoint is genuinely meant to be public | Logged-in user: ensure `credentials: 'include'` (and `Authorization` when `sdk.token` is set) on the `fetch()`. Public endpoint: add `allow_public: true` to the `_auth` call. See [Webhook auth](#webhook-auth-important) |
 | Webhook returns 404 | Automation slug mismatch — `endpoint:` in the YAML must equal the path in the URL | Open the automation in the Builder, copy its endpoint |
 | `streamEvents` never connects | Wrong workspace identifier | Use `workspace.id` (UUID), not `workspace.slug` — the events service requires the UUID for non-`slug:` identifiers |
 | `npm run deploy` → `404 /v2/v2/...` | `PRISMEAI_API_URL` doesn't include `/v2`, or includes it twice | Set it to `https://api.example.com/v2` (one `/v2`, no trailing slash) |

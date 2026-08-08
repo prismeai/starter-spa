@@ -60,6 +60,8 @@ The deployed artifact is a CommonJS React bundle (`dist/bundle.js`) that the Pri
 
 7. **Don't introduce a build for `automations/, imports/, etc.`.** YAMLs under `automations/` are pushed as-is. Don't add a templating layer; keep the DSUL plain.
 
+8. **Guard every webhook.** Prisme.ai `when: endpoint:` automations are PUBLIC by default — anyone with the URL can call them, no auth. Every protected webhook MUST call the `_auth` guard first and `break` on `{{auth.error}}` (see `automations/v1/status.yml` for the canonical block). Leave an endpoint open ONLY by passing `allow_public: true` to `_auth`, so the intent is explicit in the YAML. Event listeners (`when: events:`) don't need it. Never ship a bare `when: endpoint:` automation with no guard. See README → "Webhook auth".
+
 ---
 
 ## Common tasks

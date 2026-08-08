@@ -1,0 +1,121 @@
+slug: _auth
+name: Auth Guard
+description: >-
+  Lightweight authentication guard for webhook automations. Prisme.ai webhook
+  endpoints are PUBLIC by default -- anyone with the URL can call them. Put this
+  at the start of every `when: endpoint` automation you want to protect: it
+  rejects anonymous callers with 401 and resolves the caller identity (session
+  user, org API key, or -- when explicitly opted-in -- a trusted source
+  workspace) into a single `auth` object the caller can trust. Modelled on the
+  storage workspace `_auth` middleware, trimmed to identity resolution (no RBAC /
+  resource loading -- add your own once you have collections to protect).
+private: true
+arguments:
+  allow_public:
+    type: boolean
+    description: >-
+      When true, anonymous (unauthenticated) callers are allowed through with
+      auth_type=anonymous instead of being rejected with 401. Use ONLY for
+      endpoints you intentionally leave open (e.g. a public-facing app deployed
+      with PRISMEAI_PUBLIC=true). Defaults to false -- endpoints are protected
+      by default.
+  allow_trusted_workspaces:
+    type: boolean
+    description: >-
+      When true, accept cross-workspace calls from workspaces listed in
+      config.trusted_source_workspaces (resolved via global.workspacesRegistry).
+      Their own auth is already validated, so they are trusted without a session
+      user. Defaults to false -- opt-in per endpoint. Leave off unless you
+      knowingly expose this endpoint to another workspace.
+do:
+  - comment: |
+      =====================================================================
+      1. CONTEXT (session org, platform admin)
+      =====================================================================
+  - set:
+      name: orgSlug
+      value: '{{session.org.slug}}'
+  - set:
+      name: is_platform_admin
+      value: '{% {{user.platformRole}} == "superadmin" || {{user.platformRole}} == "root" %}'
+  - comment: |
+      =====================================================================
+      2. CROSS-WORKSPACE TRUSTED SOURCE DETECTION (opt-in)
+      A workspace JWT does NOT populate user.id -- only run.sourceWorkspaceId
+      identifies the caller. When the caller is listed in
+      config.trusted_source_workspaces, its own auth has already run, so we
+      accept it without a session user.
+      =====================================================================
+  - set:
+      name: is_trusted_source
+      value: false
+  - set:
+      name: source_workspace_id
+      value: '{{run.sourceWorkspaceId}}'
+  - conditions:
+      '{{allow_trusted_workspaces}} and {{source_workspace_id}}':
+        - repeat:
+            'on': '{{config.trusted_source_workspaces}}'
+            do:
+              - conditions:
+                  '{{source_workspace_id}} == {{global.workspacesRegistry[{{item}}].id}}':
+                    - set:
+                        name: is_trusted_source
+                        value: true
+                    - set:
+                        name: trusted_source_slug
+                        value: '{{item}}'
+                    - break:
+                        scope: repeat
+  - comment: |
+      =====================================================================
+      3. IDENTITY RESOLUTION -- first matching branch wins
+      =====================================================================
+  - conditions:
+      '{{user.id}}':
+        - comment: Session user (browser call with credentials:'include' or a personal access token)
+        - set:
+            name: user_id
+            value: '{{user.id}}'
+        - set:
+            name: auth_type
+            value: user
+      '{{orgSlug}} && {{run.apiKeyId}}':
+        - comment: Org-scoped API key -- no user, but org context + run.permissions are set
+        - set:
+            name: auth_type
+            value: apikey
+        - set:
+            name: apikey_user_id
+            value: '{{run.apiKeyId}}'
+      '{{is_trusted_source}}':
+        - comment: Trusted source workspace -- no session user required
+        - set:
+            name: auth_type
+            value: workspace
+      '{{allow_public}}':
+        - comment: Endpoint opted into public access -- let anonymous callers through
+        - set:
+            name: auth_type
+            value: anonymous
+      default:
+        - set:
+            name: error
+            value:
+              error: UNAUTHORIZED
+              message: Authentication required
+              status: 401
+        - break:
+            scope: automation
+output:
+  error: '{{error.error}}'
+  message: '{{error.message}}'
+  status: '{{error.status}}'
+  user_id: '{% {{user_id}} || {{apikey_user_id}} %}'
+  auth_type: '{{auth_type}}'
+  orgSlug: '{{orgSlug}}'
+  is_platform_admin: '{{is_platform_admin}}'
+  is_trusted_source: '{{is_trusted_source}}'
+  source_workspace_id: '{{source_workspace_id}}'
+  user_permissions: '{{run.permissions}}'
+  user_scopes: '{{run.scopes}}'
