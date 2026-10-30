@@ -553,7 +553,12 @@ async function patchWorkspaceConfig({ bundleUrl, embedUrl, ws, slug }) {
   //  - public true → renderer skips /v2/me, passes user: null, and the _bundle
   //    endpoint is public → the app opens without any login. Ideal for
   //    public-facing sites/landing pages.
-  const isPublic = process.env.PRISMEAI_PUBLIC === 'true'
+  // Left unset, PRISMEAI_PUBLIC keeps what the entry already says (set from
+  // the Studio or the API); `true` / `false` force it.
+  const { embed: _previousEmbed, ...previousEntry } = existingBundles[slug] || {}
+  const publicEnv = process.env.PRISMEAI_PUBLIC
+  const isPublic =
+    publicEnv ? publicEnv === 'true' : previousEntry.public === true
   console.log(`  public=${isPublic}`)
 
   await api('PATCH', `/workspaces/${PRISMEAI_WORKSPACE_ID}`, {
@@ -563,13 +568,17 @@ async function patchWorkspaceConfig({ bundleUrl, embedUrl, ws, slug }) {
           ...existing,
           bundles: {
             ...existingBundles,
+            // Merge into the existing entry: keys set from the Studio or the
+            // API (`displayMode`, `metadata` for link previews…) must survive a
+            // redeploy. Only the build outputs and `public` are rewritten.
             [slug]: {
+              ...previousEntry,
               bundle: bundleUrl,
               ...(embedUrl ? { embed: embedUrl } : {}),
               version: PRISMEAI_APP_VERSION,
               name: ws?.name || slug,
               builtAt,
-              ...(isPublic ? { public: true } : {}),
+              public: isPublic,
             },
           },
         },
