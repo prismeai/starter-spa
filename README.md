@@ -395,7 +395,7 @@ All `.env*` files except `.env.example` are gitignored.
 | `PRISMEAI_API_KEY` | one of these | Org-scoped API key. Sent as `x-prismeai-api-key`. Use access token instead when possible. |
 | `PRISMEAI_WORKSPACE_ID` | yes | Short ID of the target workspace (e.g. `B4eoHS6`) |
 | `PRISMEAI_PLATFORM_URL` | no | UI host (e.g. `https://app.acme.example.com`). Only needed for embed.js. |
-| `PRISMEAI_PUBLIC` | no | `true` to open the app without login — renderer skips `/v2/me`, `user` is `null`. |
+| `PRISMEAI_PUBLIC` | no | `true` to open the app without login — renderer skips `/v2/me`, `user` is `null`. `false` forces sign-in; unset keeps the current setting of the deployed entry. |
 | `PRISMEAI_BUNDLE_SLUG` | no | Override the bundles[<key>] (default: workspace slug) |
 | `PRISMEAI_APP_VERSION` | no | Version label written to workspace config (default `1.0.0`) |
 | `PRISMEAI_HTTP_TIMEOUT` | no | Per-request timeout in ms (default `30000`) |
