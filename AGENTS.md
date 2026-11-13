@@ -12,6 +12,8 @@ A starter for building a Prisme.ai app locally in VS Code, then deploying it to 
 
 The deployed artifact is a CommonJS React bundle (`dist/bundle.js`) that the Prisme.ai platform's `AppRenderer` loads at runtime, plus optional DSUL automations under `automations/` that the React app calls.
 
+It builds the **shared** app format. The Builder now starts new apps in the **isolated** format (own libraries, `app` object), which this build does not produce: don't port isolated sources here, and keep the deploy's format guard (README → "App format").
+
 **Read [`README.md`](./README.md) before making changes.** It explains the host contract, the deploy pipeline, and the constraints (Tailwind class set, lucide icon subset, externals).
 
 ---

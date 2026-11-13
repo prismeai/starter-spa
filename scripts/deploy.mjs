@@ -30,6 +30,8 @@
  *   PRISMEAI_APP_VERSION           default '1.0.0'
  *   PRISMEAI_SKIP_SOURCE_SYNC      'true' to skip step 1
  *   PRISMEAI_SKIP_VERSION_SNAPSHOT 'true' to skip step 5
+ *   PRISMEAI_ALLOW_FORMAT_SWITCH   'true' to replace an app deployed in the
+ *                                  isolated format (Builder) with this shared bundle
  */
 
 import dotenv from 'dotenv'
@@ -83,6 +85,7 @@ const SKIP_VERSION_SNAPSHOT = process.env.PRISMEAI_SKIP_VERSION_SNAPSHOT === 'tr
 const SKIP_AUTOMATIONS_SYNC = process.env.PRISMEAI_SKIP_AUTOMATIONS_SYNC === 'true'
 const SKIP_BUNDLE_CLEANUP = process.env.PRISMEAI_SKIP_BUNDLE_CLEANUP === 'true'
 const SKIP_SMOKE = process.env.PRISMEAI_SKIP_SMOKE === 'true'
+const ALLOW_FORMAT_SWITCH = process.env.PRISMEAI_ALLOW_FORMAT_SWITCH === 'true'
 const FORCE = process.argv.includes('--force') || process.env.PRISMEAI_FORCE === 'true'
 
 // fail() throws so the top-level try/catch can print a deploy summary + recovery
@@ -573,6 +576,11 @@ async function patchWorkspaceConfig({ bundleUrl, embedUrl, ws, slug }) {
             // redeploy. Only the build outputs and `public` are rewritten.
             [slug]: {
               ...previousEntry,
+              // This starter builds the shared format: what only an isolated
+              // deploy writes is dropped (`format` absent = shared).
+              format: undefined,
+              views: undefined,
+              manifest: undefined,
               bundle: bundleUrl,
               ...(embedUrl ? { embed: embedUrl } : {}),
               version: PRISMEAI_APP_VERSION,
@@ -786,6 +794,36 @@ const RECOVERY = {
 }
 
 console.log(`Deploying to ${API_BASE}, workspace=${PRISMEAI_WORKSPACE_ID}`)
+
+// ---------------------------------------------------------------------------
+// 0. Format guard
+//
+// The Builder creates new apps in the isolated format (own libraries, `app`
+// object). This starter builds the shared format (CJS bundle, host props):
+// deploying it over an isolated app would also overwrite the Builder's
+// sources with this repo's. Checked before anything is written.
+// ---------------------------------------------------------------------------
+
+async function checkFormat() {
+  const ws = await api('GET', `/workspaces/${PRISMEAI_WORKSPACE_ID}`)
+  const target = process.env.PRISMEAI_BUNDLE_SLUG || ws?.slug || PRISMEAI_WORKSPACE_ID
+  if (ws?.config?.value?.bundles?.[target]?.format !== 'isolated') return
+  if (ALLOW_FORMAT_SWITCH) {
+    console.log(`⚠ bundles[${target}] is an isolated app: replaced by this shared bundle (PRISMEAI_ALLOW_FORMAT_SWITCH=true)`)
+    return
+  }
+  console.error(`✗ bundles[${target}] is an isolated app (created or deployed from the Builder).`)
+  console.error(`  This starter builds the shared format; deploying would replace the app and its sources.`)
+  console.error(`  Deploy to another key (PRISMEAI_BUNDLE_SLUG) or workspace, or set PRISMEAI_ALLOW_FORMAT_SWITCH=true to replace it.`)
+  process.exit(1)
+}
+
+try {
+  await checkFormat()
+} catch (err) {
+  console.error(`✗ Could not read the workspace: ${err?.message || err}`)
+  process.exit(1)
+}
 
 let exitCode = 0
 let bundleUrl, embedUrl, slug
