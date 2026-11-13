@@ -162,6 +162,11 @@ if (!SKIP_AUTOMATIONS) {
   // We need per-slug GETs for the full body.
   const ws = await api('GET', `/workspaces/${PRISMEAI_WORKSPACE_ID}`)
   const slugs = Object.keys(ws?.automations || {})
+  const bundleKey = process.env.PRISMEAI_BUNDLE_SLUG || ws?.slug
+  const deployed = ws?.config?.value?.bundles?.[bundleKey]
+  if (deployed?.bundle && deployed.format !== 'isolated') {
+    console.warn(`⚠ bundles[${bundleKey}] is an app in the shared format: its sources use host props (sdk, user, workspace), which this starter's build does not provide. Use the legacy-shared branch for it.`)
+  }
 
   if (slugs.length === 0) {
     console.log('  (none)')

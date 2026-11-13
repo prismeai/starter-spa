@@ -6,6 +6,21 @@ Each item has: **Why** (real risk it addresses), **Symptoms** (what goes wrong w
 
 ---
 
+## v0.3 — isolated format
+
+Shipped: the app is built in the isolated format, like the Builder's new apps (one self-contained bundle per view, the `app` object, the kit in `vendor/`), with the Builder's guided example. Format guard both ways, `npm run dev:live` through a server-side proxy, `npm run sync-kit`, `npm run check`, `_auth` on every webhook including `mcp`, and a view for the chat (`src/views/HelloCard.tsx`, shown by the `hello` tool, served by `mcp`). The shared format stays on the `legacy-shared` branch.
+
+Open:
+
+| Item | Why |
+|---|---|
+| Workspace events in `npm run dev:live` | Events stay simulated locally; the live event stream needs the platform's WebSocket. |
+| Publish the kit on npm | Would replace `vendor/` for SaaS users; self-hosted users keep the platform's copy. |
+
+Items below describe v0.1 (shared format): steps and file names have changed since, see the README.
+
+---
+
 ## v0.1 — shipped
 
 All 6 P0 + 6 P1 items shipped (see commits). Repo is on GitHub at `prismeai/starter-spa`.

@@ -1,35 +1,30 @@
 #!/usr/bin/env node
 /**
- * Deploy the built bundle to a Prisme.ai workspace.
+ * Deploy the built app to a Prisme.ai workspace, in the isolated format.
  *
- * Mirrors the in-builder "Deploy" button (see BundlePublishModal.handlePublish):
+ * Mirrors the Builder's Deploy button for an isolated app (useAppBuild):
  *
- *   1. Sync src/* files into the workspace as `metadata.type=source` files
- *      (hash-based differential sync — only changed files are re-uploaded).
- *      → Lets a teammate open the same workspace in the in-builder Builder
- *        and see the exact same code your repo holds.
- *
- *   2. Compile + upload the bundle as a public file.
- *
- *   3. (Optional) Upload embed.js so the app can be embedded via <script> on
- *      a 3rd-party site. Skipped unless PRISMEAI_PLATFORM_URL is set.
- *
- *   4. PATCH workspace.config.value.bundles[<slug>] so AppRenderer picks up
- *      the new bundle URL.
- *
- *   5. POST /workspaces/:id/versions to snapshot a Prisme version.
+ *   0. Format guard: refuses to replace an app deployed in the shared format.
+ *   1. Sync automations/*.yml into the workspace.
+ *   2. Sync src/* (and prisme.app.json) as `metadata.type=source` files, so the
+ *      Builder opens the same code your repo holds.
+ *   3. Upload each view bundle of dist/ as a public file.
+ *   4. PATCH workspace.config.value.bundles[<slug>]: format 'isolated', the
+ *      views, the manifest, the MCP endpoint and the agent of the app.
+ *   5. Clean up bundle files no app points at, smoke-test, snapshot a version.
  *
  * Required env (.env at repo root):
  *   PRISMEAI_API_URL          full URL incl. /v2 (e.g. https://api.acme.com/v2)
- *   PRISMEAI_API_KEY          personal API key
- *   PRISMEAI_WORKSPACE_ID     UUID of the target workspace
+ *   PRISMEAI_ACCESS_TOKEN     personal access token (or PRISMEAI_API_KEY)
+ *   PRISMEAI_WORKSPACE_ID     short ID of the target workspace
  *
  * Optional:
- *   PRISMEAI_PLATFORM_URL          UI host for embed.js (e.g. https://app.acme.com)
  *   PRISMEAI_BUNDLE_SLUG           override the bundles[<key>] (default: workspace.slug)
  *   PRISMEAI_APP_VERSION           default '1.0.0'
- *   PRISMEAI_SKIP_SOURCE_SYNC      'true' to skip step 1
- *   PRISMEAI_SKIP_VERSION_SNAPSHOT 'true' to skip step 5
+ *   PRISMEAI_APP_AGENT             agent whose chat the app opens (app.agent); empty removes it
+ *   PRISMEAI_MCP_WEBHOOK           webhook of the MCP endpoint the views call (default 'mcp')
+ *   PRISMEAI_ALLOW_FORMAT_SWITCH   'true' to replace an app deployed in the shared format
+ *   PRISMEAI_SKIP_*                see README
  */
 
 import dotenv from 'dotenv'
@@ -40,10 +35,11 @@ import { execSync } from 'node:child_process'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import yaml from 'js-yaml'
+import { VIEW_FILE, isolatedEntry, referencedFiles } from './lib/isolated.mjs'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const ROOT = path.resolve(__dirname, '..')
-const BUNDLE_PATH = path.join(ROOT, 'dist/bundle.js')
+const DIST = path.join(ROOT, 'dist')
 
 // Multi-env: pick .env.<name> if --env=<name> or PRISMEAI_ENV is set, else .env.
 // Print which file we loaded so you never accidentally deploy to prod thinking
@@ -75,7 +71,8 @@ const {
   PRISMEAI_ACCESS_TOKEN,
   PRISMEAI_API_KEY,
   PRISMEAI_WORKSPACE_ID,
-  PRISMEAI_PLATFORM_URL,
+  PRISMEAI_APP_AGENT,
+  PRISMEAI_MCP_WEBHOOK,
 } = process.env
 const PRISMEAI_APP_VERSION = process.env.PRISMEAI_APP_VERSION || '1.0.0'
 const SKIP_SOURCE_SYNC = process.env.PRISMEAI_SKIP_SOURCE_SYNC === 'true'
@@ -83,6 +80,7 @@ const SKIP_VERSION_SNAPSHOT = process.env.PRISMEAI_SKIP_VERSION_SNAPSHOT === 'tr
 const SKIP_AUTOMATIONS_SYNC = process.env.PRISMEAI_SKIP_AUTOMATIONS_SYNC === 'true'
 const SKIP_BUNDLE_CLEANUP = process.env.PRISMEAI_SKIP_BUNDLE_CLEANUP === 'true'
 const SKIP_SMOKE = process.env.PRISMEAI_SKIP_SMOKE === 'true'
+const ALLOW_FORMAT_SWITCH = process.env.PRISMEAI_ALLOW_FORMAT_SWITCH === 'true'
 const FORCE = process.argv.includes('--force') || process.env.PRISMEAI_FORCE === 'true'
 
 // fail() throws so the top-level try/catch can print a deploy summary + recovery
@@ -167,11 +165,10 @@ function sha256(content) {
 // ---------------------------------------------------------------------------
 
 const ROOT_SOURCE_FILES = [
+  'prisme.app.json', // marks the app isolated for the Builder
   'package.json',
   'tsconfig.json',
   'vite.config.ts',
-  'tailwind.config.js',
-  'postcss.config.js',
   'index.html',
 ]
 const SOURCE_DIRS = ['src']
@@ -490,76 +487,50 @@ async function uploadSourceFile(relPath, content, hash) {
 }
 
 // ---------------------------------------------------------------------------
-// 2. Upload bundle (parity with useAppBuild step 2)
+// 3. Upload the view bundles (parity with useAppBuild buildIsolated)
+//
+// Each file name carries the hash of its content (`app.<hash>.js`): a new
+// build gets new URLs, so no cache ever serves an old view.
 // ---------------------------------------------------------------------------
 
-async function uploadBundle() {
-  const bundleBytes = await readFile(BUNDLE_PATH).catch(() =>
-    fail('dist/bundle.js not found — run `npm run build` first.')
+async function uploadViews() {
+  const raw = await readFile(path.join(DIST, 'manifest.json'), 'utf8').catch(() =>
+    fail('dist/manifest.json not found: run `npm run build` first.')
   )
-  console.log(`→ Uploading bundle (${(bundleBytes.length / 1024).toFixed(1)} KB)`)
-  const fd = new FormData()
-  fd.append('file', new Blob([bundleBytes], { type: 'application/javascript' }), 'bundle.js')
-  fd.append('public', 'true')
-  const res = await api('POST', `/workspaces/${PRISMEAI_WORKSPACE_ID}/files`, { body: fd })
-  if (!Array.isArray(res) || !res[0]?.url) {
-    fail('Bundle upload returned no URL. Check that the API key has write access to the workspace.')
+  const { manifest, views } = JSON.parse(raw)
+  console.log(`→ Uploading ${views.length} view bundle${views.length > 1 ? 's' : ''}`)
+  const urls = {}
+  for (const view of views) {
+    const code = await readFile(path.join(DIST, view.fileName))
+    const fd = new FormData()
+    fd.append('file', new Blob([code], { type: 'application/javascript' }), view.fileName)
+    fd.append('public', 'true')
+    const res = await api('POST', `/workspaces/${PRISMEAI_WORKSPACE_ID}/files`, { body: fd })
+    if (!Array.isArray(res) || !res[0]?.url) {
+      fail(`Upload of the "${view.name}" view returned no URL. Check that the token has write access to the workspace.`)
+    }
+    urls[view.name] = res[0].url
+    console.log(`✓ ${view.name}: ${res[0].url}`)
   }
-  console.log(`✓ ${res[0].url}`)
-  return res[0].url
-}
-
-// ---------------------------------------------------------------------------
-// 3. Upload embed.js (optional — only if PRISMEAI_PLATFORM_URL is set)
-// ---------------------------------------------------------------------------
-
-async function uploadEmbed() {
-  if (!PRISMEAI_PLATFORM_URL) {
-    console.log('· embed.js upload skipped (set PRISMEAI_PLATFORM_URL to enable)')
-    return null
-  }
-  const embedSrc = `${PRISMEAI_PLATFORM_URL.replace(/\/$/, '')}/embed.js`
-  console.log(`→ Fetching embed.js from ${embedSrc}`)
-  const res = await fetch(embedSrc)
-  if (!res.ok) {
-    console.warn(`⚠ Could not fetch embed.js (${res.status}) — skipping embed upload`)
-    return null
-  }
-  const code = await res.text()
-  const fd = new FormData()
-  fd.append('file', new Blob([code], { type: 'application/javascript' }), 'embed.js')
-  fd.append('public', 'true')
-  const up = await api('POST', `/workspaces/${PRISMEAI_WORKSPACE_ID}/files`, { body: fd })
-  if (!Array.isArray(up) || !up[0]?.url) {
-    console.warn('⚠ embed.js upload returned no URL — skipping')
-    return null
-  }
-  console.log(`✓ ${up[0].url}`)
-  return up[0].url
+  return { views: urls, manifest }
 }
 
 // ---------------------------------------------------------------------------
 // 4. Patch workspace config (the live pointer)
 // ---------------------------------------------------------------------------
 
-async function patchWorkspaceConfig({ bundleUrl, embedUrl, ws, slug }) {
+async function patchWorkspaceConfig({ views, manifest, ws, slug }) {
   console.log(`→ Patching config.value.bundles[${slug}]`)
   const existing = ws?.config?.value || {}
   const existingBundles = existing.bundles || {}
-  const builtAt = new Date().toISOString()
+  const previous = existingBundles[slug]
 
-  // Public access — see services/platform AppRenderer. The app is served at BOTH
-  // /apps/:slug (Platform Shell) and /p/:slug (standalone); `public` decides login:
-  //  - public true → renderer skips /v2/me, passes user: null, and the _bundle
-  //    endpoint is public → the app opens without any login. Ideal for
-  //    public-facing sites/landing pages.
-  // Left unset, PRISMEAI_PUBLIC keeps what the entry already says (set from
-  // the Studio or the API); `true` / `false` force it.
-  const { embed: _previousEmbed, ...previousEntry } = existingBundles[slug] || {}
+  // Public access: the app is served at /apps/:slug (Platform Shell) and
+  // /p/:slug (standalone); `public` decides login. Unset, PRISMEAI_PUBLIC keeps
+  // what the entry already says (set from the Builder or the API).
   const publicEnv = process.env.PRISMEAI_PUBLIC
-  const isPublic =
-    publicEnv ? publicEnv === 'true' : previousEntry.public === true
-  console.log(`  public=${isPublic}`)
+  const isPublic = publicEnv ? publicEnv === 'true' : previous?.public === true
+  console.log(`  public=${isPublic}${PRISMEAI_APP_AGENT ? ` agent=${PRISMEAI_APP_AGENT}` : ''}`)
 
   await api('PATCH', `/workspaces/${PRISMEAI_WORKSPACE_ID}`, {
     body: {
@@ -568,18 +539,17 @@ async function patchWorkspaceConfig({ bundleUrl, embedUrl, ws, slug }) {
           ...existing,
           bundles: {
             ...existingBundles,
-            // Merge into the existing entry: keys set from the Studio or the
-            // API (`displayMode`, `metadata` for link previews…) must survive a
-            // redeploy. Only the build outputs and `public` are rewritten.
-            [slug]: {
-              ...previousEntry,
-              bundle: bundleUrl,
-              ...(embedUrl ? { embed: embedUrl } : {}),
+            // Merged: keys set from the Builder or the API (`metadata` for
+            // link previews…) survive a redeploy.
+            [slug]: isolatedEntry(previous, {
+              views,
+              manifest,
               version: PRISMEAI_APP_VERSION,
               name: ws?.name || slug,
-              builtAt,
-              public: isPublic,
-            },
+              isPublic,
+              mcp: PRISMEAI_MCP_WEBHOOK,
+              agent: PRISMEAI_APP_AGENT,
+            }),
           },
         },
       },
@@ -588,9 +558,9 @@ async function patchWorkspaceConfig({ bundleUrl, embedUrl, ws, slug }) {
 }
 
 // ---------------------------------------------------------------------------
-// 4b. Cleanup orphan bundle / embed files
+// 4b. Cleanup of bundle files no app points at
 //
-// Each deploy uploads a NEW <random>.bundle.js (and optionally embed.js).
+// Each deploy uploads NEW view files (their name carries their hash).
 // The platform doesn't dedupe; old files stay in workspace storage forever
 // unless we clean them up. Run AFTER the config PATCH so we know which URLs
 // are still referenced.
@@ -602,23 +572,21 @@ async function cleanupOrphanBundles() {
     return
   }
 
-  console.log(`→ Cleaning up orphan bundle/embed files`)
+  console.log(`→ Cleaning up bundle files no app points at`)
 
   // Fetch the workspace fresh to get the canonical current bundles map
   const ws = await api('GET', `/workspaces/${PRISMEAI_WORKSPACE_ID}`)
   const bundles = ws?.config?.value?.bundles || {}
-  const referenced = new Set()
-  for (const entry of Object.values(bundles)) {
-    if (entry?.bundle) referenced.add(entry.bundle)
-    if (entry?.embed) referenced.add(entry.embed)
-  }
+  const referenced = referencedFiles(bundles)
 
   // List public files (bundles + embeds are uploaded with public=true)
   const list = await api('GET', `/workspaces/${PRISMEAI_WORKSPACE_ID}/files?limit=1000`)
   const files = Array.isArray(list) ? list : list?.result || []
+  // Bundles of shared apps (bundle.js, embed.js) and views of isolated ones
+  // (<view>.<hash>.js), whichever app of the workspace deployed them.
   const candidates = files.filter(f =>
     f.public === true &&
-    (f.name === 'bundle.js' || f.name === 'embed.js')
+    (f.name === 'bundle.js' || f.name === 'embed.js' || VIEW_FILE.test(f.name || ''))
   )
 
   let deleted = 0, kept = 0
@@ -636,15 +604,9 @@ async function cleanupOrphanBundles() {
 // ---------------------------------------------------------------------------
 // 4c. Smoke test
 //
-// A successful PATCH doesn't mean the app actually loads. Three failure modes
-// pass the deploy but break the live UI:
-//   1. Bundle is syntactically broken (esbuild emitted bad CJS)
-//   2. Bundle imports a module not in externals (would throw at runtime)
-//   3. config.value.bundles[<slug>] points to a 404 / expired URL
-//
-// We replay what AppRenderer does: GET /pages/<slug>/_bundle, fetch the JS,
-// execute it in a Function() with stubbed externals, verify module.default
-// is a function/object.
+// A successful PATCH doesn't mean the app loads. Replays what the platform
+// does: resolves the app through /pages/<slug>/_bundle, checks it is
+// isolated, then fetches and parses each view bundle.
 // ---------------------------------------------------------------------------
 
 async function smokeTest({ slug }) {
@@ -653,32 +615,22 @@ async function smokeTest({ slug }) {
     return
   }
   console.log(`→ Smoke test`)
-
-  // 1. Resolve via the same endpoint AppRenderer uses
   const resolved = await api('GET', `/pages/${encodeURIComponent(slug)}/_bundle`)
-  const bundleUrl = resolved?.bundles?.[slug]?.bundle
-  if (!bundleUrl) fail(`Smoke: /pages/${slug}/_bundle has no bundles[${slug}].bundle`)
-
-  // 2. Fetch the bundle (public URL, no auth)
-  const bundleRes = await fetch(bundleUrl)
-  if (!bundleRes.ok) fail(`Smoke: bundle URL returned ${bundleRes.status} ${bundleRes.statusText}`)
-  const code = await bundleRes.text()
-  if (code.length === 0) fail(`Smoke: bundle URL returned empty body`)
-
-  // 3. Parse-check (catches esbuild emitting bad CJS). Doesn't execute — that
-  //    requires a real React in scope, which we can't realistically stub here.
-  try {
-    new Function('require', 'exports', 'module', '__filename', '__dirname', code)
-  } catch (err) {
-    fail(`Smoke: bundle is not valid JavaScript — ${err?.message || err}`)
+  const entry = resolved?.bundles?.[slug]
+  if (!entry?.bundle) fail(`Smoke: /pages/${slug}/_bundle has no bundles[${slug}].bundle`)
+  if (entry.format !== 'isolated') fail(`Smoke: bundles[${slug}] is not isolated (format: ${entry.format ?? 'shared'})`)
+  for (const [name, url] of Object.entries(entry.views ?? { app: entry.bundle })) {
+    const res = await fetch(url)
+    if (!res.ok) fail(`Smoke: view "${name}" returned ${res.status} ${res.statusText}`)
+    const code = await res.text()
+    if (!code) fail(`Smoke: view "${name}" is empty`)
+    try {
+      new Function(code)
+    } catch (err) {
+      fail(`Smoke: view "${name}" is not valid JavaScript (${err?.message || err})`)
+    }
+    console.log(`  ✓ ${name}: reachable, valid JS (${(code.length / 1024).toFixed(1)} KB)`)
   }
-
-  // 4. Static check that the bundle exposes a default export. esbuild's CJS
-  //    output writes either `module.exports=` or `module.exports.default=`.
-  if (!/module\.exports\s*=|exports\.default\s*=/.test(code)) {
-    fail(`Smoke: bundle does not appear to set module.exports (esbuild output pattern not found)`)
-  }
-  console.log(`  ✓ bundle reachable, valid JS, has CJS exports (${(code.length / 1024).toFixed(1)} KB)`)
 }
 
 // ---------------------------------------------------------------------------
@@ -753,11 +705,10 @@ const steps = [
   { key: 'conflict',    label: 'Conflict detection' },
   { key: 'automations', label: 'Automations sync' },
   { key: 'source',      label: 'Source files sync' },
-  { key: 'bundle',      label: 'Bundle upload' },
-  { key: 'embed',       label: 'embed.js upload' },
+  { key: 'bundle',      label: 'View bundles upload' },
   { key: 'config',      label: 'Workspace config PATCH (live pointer)' },
   { key: 'cleanup',     label: 'Orphan bundle cleanup' },
-  { key: 'smoke',       label: 'Smoke test (bundle loads + default export)' },
+  { key: 'smoke',       label: 'Smoke test (isolated entry, views load)' },
   { key: 'version',     label: 'Version snapshot' },
 ]
 const status = Object.fromEntries(steps.map(s => [s.key, 'pending']))
@@ -777,8 +728,7 @@ const RECOVERY = {
   conflict:    'No state changed. Either run `npm run pull` to fetch remote changes, or use --force to override.',
   automations: 'Some automations may have been pushed before the failure. The live UI is unaffected. Re-run `npm run deploy` to retry (PATCHes are idempotent).',
   source:      'Some source files may have been uploaded. The live UI is unaffected. Re-run `npm run deploy` — differential sync will only push what changed.',
-  bundle:      'Bundle upload failed. End users still see the previous version. Re-run `npm run deploy`.',
-  embed:       'Bundle is uploaded but embed.js (3rd-party embedding) failed. /apps/<slug> still works. Either set/check PRISMEAI_PLATFORM_URL, or unset it to skip embed entirely.',
+  bundle:      'A view upload failed. End users still see the previous version. Re-run `npm run deploy`.',
   config:      'CRITICAL: bundle was uploaded but workspace config was NOT updated. The new bundle is orphaned; end users still see the OLD version. Re-run `npm run deploy` — a new bundle upload will succeed and the config patch will retry.',
   cleanup:     'Deploy SUCCEEDED — the live UI is updated to the new bundle. Cleanup of orphan bundle files failed but is non-critical (will retry next deploy).',
   smoke:       'Bundle is live but the smoke test failed — the bundle may be syntactically broken or reference a missing external. End users will see a "Failed to load bundle" error. Run `npm run undeploy` to roll back, OR fix the bundle and re-deploy.',
@@ -787,21 +737,52 @@ const RECOVERY = {
 
 console.log(`Deploying to ${API_BASE}, workspace=${PRISMEAI_WORKSPACE_ID}`)
 
+// ---------------------------------------------------------------------------
+// 0. Format guard
+//
+// This starter builds isolated apps. An app already deployed in the shared
+// format (the format before isolated apps) is a different app: deploying over
+// it would replace it, and overwrite its Builder sources with this repo's.
+// Checked before anything is written.
+// ---------------------------------------------------------------------------
+
+async function checkFormat() {
+  const ws = await api('GET', `/workspaces/${PRISMEAI_WORKSPACE_ID}`)
+  const target = process.env.PRISMEAI_BUNDLE_SLUG || ws?.slug || PRISMEAI_WORKSPACE_ID
+  const previous = ws?.config?.value?.bundles?.[target]
+  if (!previous?.bundle || previous.format === 'isolated') return
+  if (ALLOW_FORMAT_SWITCH) {
+    console.log(`⚠ bundles[${target}] is a shared app: replaced by this isolated app (PRISMEAI_ALLOW_FORMAT_SWITCH=true)`)
+    return
+  }
+  console.error(`✗ bundles[${target}] is an app in the shared format.`)
+  console.error(`  This starter builds isolated apps; deploying would replace that app and its sources.`)
+  console.error(`  Deploy to another key (PRISMEAI_BUNDLE_SLUG) or workspace, set PRISMEAI_ALLOW_FORMAT_SWITCH=true`)
+  console.error(`  to replace it, or keep working on it with the legacy-shared branch of this starter.`)
+  process.exit(1)
+}
+
+try {
+  await checkFormat()
+} catch (err) {
+  console.error(`✗ Could not read the workspace: ${err?.message || err}`)
+  process.exit(1)
+}
+
 let exitCode = 0
-let bundleUrl, embedUrl, slug
+let slug
 
 try {
   await detectConflicts();             mark('conflict', 'done')
   await syncAutomations();             mark('automations', SKIP_AUTOMATIONS_SYNC ? 'skipped' : 'done')
   await syncSourceFiles();             mark('source', SKIP_SOURCE_SYNC ? 'skipped' : 'done')
 
-  bundleUrl = await uploadBundle();    mark('bundle', 'done')
-  embedUrl = await uploadEmbed();      mark('embed', embedUrl ? 'done' : 'skipped')
+  const { views, manifest } = await uploadViews();  mark('bundle', 'done')
 
   const ws = await api('GET', `/workspaces/${PRISMEAI_WORKSPACE_ID}`)
   slug = process.env.PRISMEAI_BUNDLE_SLUG || ws?.slug || PRISMEAI_WORKSPACE_ID
 
-  await patchWorkspaceConfig({ bundleUrl, embedUrl, ws, slug });  mark('config', 'done')
+  await patchWorkspaceConfig({ views, manifest, ws, slug });  mark('config', 'done')
   await cleanupOrphanBundles();        mark('cleanup', SKIP_BUNDLE_CLEANUP ? 'skipped' : 'done')
   await smokeTest({ slug });           mark('smoke', SKIP_SMOKE ? 'skipped' : 'done')
   await versionSnapshot();             mark('version', SKIP_VERSION_SNAPSHOT ? 'skipped' : 'done')

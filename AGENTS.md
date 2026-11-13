@@ -10,9 +10,9 @@ This file gives AI coding agents (Claude Code, OpenAI Codex, Cursor, Gemini, etc
 
 A starter for building a Prisme.ai app locally in VS Code, then deploying it to a workspace via `npm run deploy`.
 
-The deployed artifact is a CommonJS React bundle (`dist/bundle.js`) that the Prisme.ai platform's `AppRenderer` loads at runtime, plus optional DSUL automations under `automations/` that the React app calls.
+The app is in the **isolated** format: `npm run build` makes one self-contained bundle per view (`dist/<view>.<hash>.js`: React, your dependencies and the app kit inside), plus declarative automations under `automations/` (YAML, the format the Prisme.ai docs call DSUL) that the app calls. The app reaches the platform only through the `app` object it receives. The shared format (CJS bundle, host props) lives on the `legacy-shared` branch.
 
-**Read [`README.md`](./README.md) before making changes.** It explains the host contract, the deploy pipeline, and the constraints (Tailwind class set, lucide icon subset, externals).
+**Read [`README.md`](./README.md) before making changes.** It explains the `app` object, the deploy pipeline, webhook auth and the constraints (styles in a shadow root, portals, bundle size).
 
 ---
 
@@ -20,25 +20,22 @@ The deployed artifact is a CommonJS React bundle (`dist/bundle.js`) that the Pri
 
 ```
 .
-├── src/                          # React app — DEFAULT EXPORT of src/App.tsx is what the platform mounts
-│   ├── App.tsx                   # ← edit this
-│   ├── main.tsx                  # local dev only
-│   ├── components/ui/            # shadcn-style; treat as scaffold (avoid breaking changes)
-│   ├── lib/utils.ts              # cn() helper
-│   └── lib/mockHost.ts           # local dev stub for {sdk, user, workspace} props
-├── automations/                  # DSUL YAML — pushed to workspace by deploy
-├── imports/                      # DSUL imports (empty by default)
-├── index.yml                     # workspace metadata (optional)
-├── security.yml                  # workspace RBAC (optional)
+├── prisme.app.json               # {"format": "isolated"}: read by the Builder
+├── src/
+│   ├── App.tsx                   # ← the app: default export, receives { app }
+│   ├── pages/, components/, lib/ # the guided example; replace with your own
+│   ├── views/                    # one view per file, shown by a tool in the chat (HelloCard.tsx)
+│   ├── styles.css                # plain CSS, host theme variables
+│   ├── main.tsx, dev/devApp.ts   # local dev only: a local `app` object
+├── automations/                  # declarative automations (YAML), pushed by deploy (_auth, v1/status, mcp, events)
+├── vendor/@prisme.ai/mcp-apps/   # the app kit (JS + types), copied from the platform
 ├── scripts/
-│   ├── build.mjs                 # esbuild → dist/bundle.js (CJS, externals stripped)
-│   ├── deploy.mjs                # push: automations + source files + bundle + config + version
-│   ├── pull.mjs                  # pull workspace state → local
-│   └── externals.mjs             # CANONICAL list of host-provided modules
-├── .vscode/
-├── .env.example                  # never commit .env itself
+│   ├── build.mjs                 # esbuild → dist/<view>.<hash>.js + dist/manifest.json
+│   ├── deploy.mjs                # format guard, automations, sources, views, config, cleanup, smoke, version
+│   ├── pull.mjs / undeploy.mjs   # workspace → local / remove the live pointer
+│   ├── sync-kit.mjs / check.mjs  # take the platform's kit / imports the Builder lacks
+│   └── lib/isolated.mjs          # shared with the Builder's compiler: entries, CSS, entry merge (tested)
 ├── README.md                     # read first
-├── TODO.md                       # roadmap; check before adding features
 └── AGENTS.md                     # this file
 ```
 
@@ -46,9 +43,9 @@ The deployed artifact is a CommonJS React bundle (`dist/bundle.js`) that the Pri
 
 ## Hard rules
 
-1. **Don't bundle externals.** If you add a dependency that the platform already provides (React, Radix, lucide-react, clsx, tailwind-merge, class-variance-authority, jotai, `@prisme.ai/sdk`), it MUST be in `scripts/externals.mjs`. Otherwise it gets duplicated and breaks (especially React → "Invalid hook call").
+1. **Only the `app` object talks to the platform.** No `@prisme.ai/sdk`, no `@prisme/*` imports (the build fails), no `fetch` with a token to the API. Webhooks: `app.webhooks.call`; tools: `app.callServerTool`; events: `app.events`. To reach another workspace or an external API, write an automation and call it.
 
-2. **Don't change the default export contract.** `src/App.tsx` exports `default function App({ sdk, user, workspace, backends, agents }: AppProps)`. The platform's `AppRenderer` validates `module.default` exists and passes those exact props. Renaming the export or changing the signature breaks every deployment.
+2. **Don't change the entry contract.** `src/App.tsx` exports `default function App({ app }: { app?: McpApp })`; each `src/views/<Name>.tsx` exports a component with the same props. The generated entry (`scripts/lib/isolated.mjs`, `bootEntrySource`) starts them with the kit's `mountView`. Don't call `createRoot` yourself outside `src/main.tsx`.
 
 3. **Don't add `process.env.*` access in `src/`.** That's Node-only. Browser code uses `import.meta.env.VITE_*` (Vite convention). Server-side scripts (`scripts/*.mjs`) use `process.env.*` via `dotenv/config`.
 
@@ -58,9 +55,11 @@ The deployed artifact is a CommonJS React bundle (`dist/bundle.js`) that the Pri
 
 6. **Don't change auth without good reason.** The script accepts `PRISMEAI_ACCESS_TOKEN` (Bearer) or `PRISMEAI_API_KEY` (`x-prismeai-api-key`). Keep both paths working.
 
-7. **Don't introduce a build for `automations/, imports/, etc.`.** YAMLs under `automations/` are pushed as-is. Don't add a templating layer; keep the DSUL plain.
+7. **Don't introduce a build for `automations/, imports/, etc.`.** YAMLs under `automations/` are pushed as-is. Don't add a templating layer; keep the YAML plain.
 
-8. **Guard every webhook.** Prisme.ai `when: endpoint:` automations are PUBLIC by default — anyone with the URL can call them, no auth. Every protected webhook MUST call the `_auth` guard first and `break` on `{{auth.error}}` (see `automations/v1/status.yml` for the canonical block). Leave an endpoint open ONLY by passing `allow_public: true` to `_auth`, so the intent is explicit in the YAML. Event listeners (`when: events:`) don't need it. Never ship a bare `when: endpoint:` automation with no guard. See README → "Webhook auth".
+8. **Guard every webhook.** Prisme.ai `when: endpoint:` automations are PUBLIC by default — anyone with the URL can call them, no auth. Every protected webhook MUST call the `_auth` guard first and `break` on `{{auth.error}}` (see `automations/v1/status.yml` for the canonical block; `automations/mcp.yml` is guarded the same way). Leave an endpoint open ONLY by passing `allow_public: true` to `_auth`, so the intent is explicit in the YAML. Event listeners (`when: events:`) don't need it. Never ship a bare `when: endpoint:` automation with no guard. See README → "Webhook auth".
+
+9. **Keep the kit in `vendor/`.** Update it with `npm run sync-kit` only, never by hand; it is copied into every bundle. Don't add `@prisme.ai/mcp-apps` to package.json.
 
 ---
 
@@ -68,13 +67,17 @@ The deployed artifact is a CommonJS React bundle (`dist/bundle.js`) that the Pri
 
 | Task | Command / file |
 |---|---|
-| Run dev server | `npm run dev` |
+| Run dev server | `npm run dev` (simulated) or `npm run dev:live` (your workspace) |
 | Build the bundle | `npm run build` |
 | Deploy to workspace | `npm run deploy` (or `npm run release` to build+deploy) |
 | Pull workspace state | `npm run pull` |
 | Add a new automation | Add a YAML under `automations/` with top-level `slug` field |
-| Add a UI component | Custom code in `src/components/`, NOT in `src/components/ui/` |
-| Add a dependency | Check `npm-dependency-evaluator` agent (if available) and verify it's NOT a host external |
+| Add a page | A file in `src/pages/` + a line in `PAGES` (`src/App.tsx`) |
+| Add a view for the chat | `src/views/<Name>.tsx`, same props as the app |
+| Take the platform's kit | `npm run sync-kit` |
+| Check the Builder can still edit the app | `npm run check` |
+| Add a UI component | `src/components/` |
+| Add a dependency | Check `npm-dependency-evaluator` agent (if available); mind the bundle size, and `npm run check` if the Builder must edit the app |
 
 ---
 
@@ -91,10 +94,10 @@ The deployed artifact is a CommonJS React bundle (`dist/bundle.js`) that the Pri
 
 ## Things I see agents do wrong
 
-- Adding `react`, `react-dom`, etc. to the bundle by forgetting to update `externals.mjs`. Always cross-check.
-- Importing from `@prisme.ai/sdk` in `src/`. The package is NOT on public npm. Use plain `fetch` and `socket.io-client` (when added).
+- Importing `@prisme.ai/sdk` or calling the API with `fetch` and a token from `src/`. Use the `app` object.
+- Rendering a dialog or a menu without `container={app.portalContainer}`: it loses the app's styles.
+- Styling `html` or `body`: in a page the app renders in a shadow root, where they match nothing. Style a root element of the app (`.app`); `:root` rules get a `:host` twin at build.
 - Calling `process.env.X` in browser code — undefined in Vite/esbuild output.
-- Modifying `src/components/ui/*` without realizing they're treated as scaffold by the agent UI in the in-builder Builder. Edits will be preserved but the in-builder AI may regenerate them.
 - Writing a "test deploy" that calls the real API without checking which workspace is in `.env`. Always print `PRISMEAI_WORKSPACE_ID` and confirm before destructive ops.
 
 ---
@@ -102,8 +105,9 @@ The deployed artifact is a CommonJS React bundle (`dist/bundle.js`) that the Pri
 ## Before you finish a change
 
 1. `npm run typecheck` passes
-2. `npm run build` succeeds and `dist/bundle.js` is reasonable size
-3. If you touched `scripts/*.mjs`, `node --check` on each
-4. If you touched `automations/, imports/, etc.`, `npm run deploy` against a sandbox workspace before claiming "done"
-5. Update `README.md` if you changed user-facing behavior
-6. Update `TODO.md` if you closed an item or surfaced a new one
+2. `npm run build` succeeds and each `dist/<view>.<hash>.js` is a reasonable size
+3. `npm test` passes (scripts/lib)
+4. If you touched `scripts/*.mjs`, `node --check` on each
+5. If you touched `automations/, imports/, etc.`, `npm run deploy` against a sandbox workspace before claiming "done"
+6. Update `README.md` if you changed user-facing behavior
+7. Update `TODO.md` if you closed an item or surfaced a new one
