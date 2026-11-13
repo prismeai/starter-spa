@@ -2,7 +2,7 @@
 
 > Build a Prisme.ai SPA (React frontend + backend automations) locally in VS Code, deploy to a workspace with one command.
 
-This is the **SPA starter** in the [`prismeai/starter-*`](#related-starters) family. It ships the same React + Radix UI + Tailwind template the in-platform Builder seeds when you click **+ Page → New SPA**. Edit it locally, version it on GitHub, deploy via CI — your repo and the in-platform Builder stay in sync.
+This is the **SPA starter** in the [`prismeai/starter-*`](#related-starters) family. It builds a React + Radix UI + Tailwind app in the **shared** format, the format of the apps created in the Builder before isolated apps. Edit it locally, version it on GitHub, deploy via CI. The Builder now starts new apps in the **isolated** format: see [App format](#app-format-shared-or-isolated) before deploying to a workspace that already has an app.
 
 ---
 
@@ -110,6 +110,24 @@ interface AppProps {
 > **Built-in apps and customer apps share the exact same loader and contract.** The platform's `AppRenderer` resolves a built-in app from a static manifest and a custom app via `GET /v2/pages/<slug>/_bundle`, but both paths converge on the same render call. What you build with this starter is loaded the same way as a first-party app shipped in the platform docker image.
 
 Locally (`npm run dev`), `src/main.tsx` provides a stub via `src/lib/mockHost.ts` so the demo renders without a live backend.
+
+### App format: shared or isolated
+
+A deployed app has a format, stored in `config.value.bundles[<slug>].format`:
+
+| | **Shared** (this starter) | **Isolated** (Builder default for new apps) |
+|---|---|---|
+| Bundle | One CJS bundle, `module.exports.default` | One self-contained bundle per view |
+| Libraries | Provided by the platform at runtime (`scripts/externals.mjs`) | Copied into the bundle at build time |
+| Platform access | Host props (`sdk`, `user`, `workspace`) | The `app` object (`app.webhooks`, `app.events`, `app.user`…) |
+| In the chat | No | Its views can show in the chat (MCP Apps) |
+
+Shared apps keep working: the format is never switched automatically, and an entry without `format` is shared. Two consequences for this starter:
+
+- `npm run deploy` **refuses** to deploy over an isolated app, before writing anything: it would replace the app and overwrite its Builder sources with this repo's. Deploy to another key (`PRISMEAI_BUNDLE_SLUG`) or workspace, or set `PRISMEAI_ALLOW_FORMAT_SWITCH=true` to replace it on purpose.
+- `npm run pull` warns when the workspace app is isolated: its sources use the `app` object, which this build does not provide.
+
+To build an isolated app, start it from the Builder (**+** next to **Pages**). See [Isolated apps](https://docs.prisme.ai/products/ai-builder/isolated-apps) in the documentation.
 
 ### Calling your workspace
 
@@ -350,16 +368,17 @@ npm run deploy        # uploads + patches workspace
 npm run release       # alias for npm run build && npm run deploy
 ```
 
-The deploy script does eight steps in order:
+The deploy script checks the app format, then runs these steps in order:
 
 | # | Step | What it writes | Skip with |
 |---|---|---|---|
+| — | **Format guard** | Refuses if `bundles[<slug>]` is an isolated app (see [App format](#app-format-shared-or-isolated)). Read only. | `PRISMEAI_ALLOW_FORMAT_SWITCH=true` |
 | 0 | **Conflict detection** | Reads `.prismeai/last-pull.json`, refuses if remote diverged from your last pull. Pre-flight check; no state change. | `--force` flag, `PRISMEAI_FORCE=true` |
 | 1 | **Automations sync** | Walks `automations/**/*.yml`, parses each, upserts via `POST/PATCH /workspaces/:id/automations[/:slug]`. Deletes any remote slug not present locally. | `PRISMEAI_SKIP_AUTOMATIONS_SYNC=true` |
 | 2 | **Source files sync** | Walks `src/` + root config files, SHA-256 hashes each, diffs against existing `metadata.type=source` files. Uploads new, replaces changed, deletes removed. | `PRISMEAI_SKIP_SOURCE_SYNC=true` |
 | 3 | **Bundle upload** | `POST /workspaces/:id/files` (`public=true`) — returns the CDN URL. | — |
 | 4 | **embed.js upload** | Fetches `${PRISMEAI_PLATFORM_URL}/embed.js` and uploads as a public file. Only needed for 3rd-party `<script>` embedding. | unset `PRISMEAI_PLATFORM_URL` |
-| 5 | **Patch workspace config** | `PATCH /workspaces/:id` writes `config.value.bundles[<slug>] = { bundle, embed?, version, name, builtAt }`. **This is the live pointer `AppRenderer` reads on every page load.** | — |
+| 5 | **Patch workspace config** | `PATCH /workspaces/:id` merges `{ bundle, embed?, version, name, builtAt, public }` into `config.value.bundles[<slug>]`, keeping the other keys (`metadata`…) and dropping the isolated-only ones (`format`, `views`, `manifest`). **This is the live pointer `AppRenderer` reads on every page load.** | — |
 | 6 | **Cleanup orphan bundles** | Lists all public `bundle.js` / `embed.js` files; deletes any not currently referenced in `bundles[*]`. Stops storage growth. | `PRISMEAI_SKIP_BUNDLE_CLEANUP=true` |
 | 7 | **Smoke test** | Resolves `/pages/<slug>/_bundle`, fetches the bundle JS, parse-checks via `new Function(...)`, verifies the CJS exports pattern is present. Catches "deploy succeeded but bundle is broken". | `PRISMEAI_SKIP_SMOKE=true` |
 | 8 | **Version snapshot** | `POST /workspaces/:id/versions` creates a Prisme.ai workspace version. | `PRISMEAI_SKIP_VERSION_SNAPSHOT=true` |
@@ -403,6 +422,7 @@ All `.env*` files except `.env.example` are gitignored.
 | `PRISMEAI_BUNDLE_SIZE_WARN` | no | Bundle size warn threshold in bytes (default `512000` = 500 KB) |
 | `PRISMEAI_BUNDLE_SIZE_MAX` | no | Bundle size hard limit in bytes (default `2097152` = 2 MB) |
 | `PRISMEAI_FORCE` | no | `true` to bypass conflict detection |
+| `PRISMEAI_ALLOW_FORMAT_SWITCH` | no | `true` to replace an isolated app (Builder) with this shared bundle |
 | `PRISMEAI_SKIP_AUTOMATIONS_SYNC` | no | `true` to skip step 1 |
 | `PRISMEAI_SKIP_SOURCE_SYNC` | no | `true` to skip step 2 |
 | `PRISMEAI_SKIP_BUNDLE_CLEANUP` | no | `true` to skip step 6 |
@@ -583,6 +603,7 @@ cmdkey /generic:prismeai-sandbox /user:%USERNAME% /pass
 | Deploy succeeds but app doesn't update | CDN cache | Hard-reload (Cmd+Shift+R) or wait ~30s |
 | `Failed to upload bundle: server returned no file` | Token/key lacks write access to that workspace | Check the workspace's RBAC; the token's owner must be a workspace admin |
 | Deploy fails with 401 | Token expired or wrong | Mint a new one in **Settings → Access Tokens**; re-check `PRISMEAI_API_URL` includes `/v2` |
+| Deploy refused: `bundles[<slug>] is an isolated app` | The app was created or deployed isolated from the Builder | Deploy to another `PRISMEAI_BUNDLE_SLUG`, or set `PRISMEAI_ALLOW_FORMAT_SWITCH=true` to replace it. See [App format](#app-format-shared-or-isolated) |
 | Deploy refused after a teammate edited in Builder | Conflict detection working as intended | Run `npm run pull` to fetch their changes, review with `git diff`, then `npm run release` |
 
 ---
