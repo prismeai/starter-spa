@@ -17,8 +17,12 @@
     "noFallthroughCasesInSwitch": true,
     "baseUrl": ".",
     "paths": {
-      "@/*": ["./src/*"]
-    }
+      "@/*": ["./src/*"],
+      "@prisme.ai/mcp-apps": ["./vendor/@prisme.ai/mcp-apps/index.d.ts"],
+      "@prisme.ai/mcp-apps/react": ["./vendor/@prisme.ai/mcp-apps/react.d.ts"],
+      "@prisme.ai/mcp-apps/boot": ["./vendor/@prisme.ai/mcp-apps/boot.d.ts"]
+    },
+    "types": ["vite/client"]
   },
-  "include": ["src"]
+  "include": ["src", "vite.config.ts"]
 }

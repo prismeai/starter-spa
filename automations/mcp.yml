@@ -1,0 +1,125 @@
+slug: mcp
+name: MCP
+description: 'MCP server of the app (JSON-RPC 2.0): tools/list, tools/call, resources/read. The app (user session) and the agents (org API key in the MCP server headers) call its tools; anonymous callers get 401 (_auth). The hello tool shows the hello-card view in the chat (ui://app/hello-card).'
+when:
+  endpoint: true
+do:
+  - _auth:
+      output: auth
+  - conditions:
+      '{{auth.error}}':
+        - set:
+            name: $http
+            value:
+              status: '{{auth.status}}'
+        - set:
+            name: output
+            value:
+              jsonrpc: '2.0'
+              id: '{{body.id}}'
+              error:
+                code: -32001
+                message: '{{auth.message}}'
+        - break:
+            scope: automation
+  - conditions:
+      '{{body.method}} == "initialize"':
+        - set:
+            name: output
+            value:
+              jsonrpc: '2.0'
+              id: '{{body.id}}'
+              result:
+                protocolVersion: '2025-06-18'
+                capabilities:
+                  tools: {}
+                  resources: {}
+                serverInfo:
+                  name: app
+                  version: 1.0.0
+      '{{body.method}} == "tools/list"':
+        - set:
+            name: output
+            value:
+              jsonrpc: '2.0'
+              id: '{{body.id}}'
+              result:
+                tools:
+                  - name: hello
+                    description: Says hello
+                    inputSchema:
+                      type: object
+                      properties:
+                        name:
+                          type: string
+                    _meta:
+                      ui:
+                        resourceUri: ui://app/hello-card
+                        visibility:
+                          - model
+                          - app
+      '{{body.method}} == "tools/call" and {{body.params.name}} == "hello"':
+        - set:
+            name: output
+            value:
+              jsonrpc: '2.0'
+              id: '{{body.id}}'
+              result:
+                content:
+                  - type: text
+                    text: Hello {{body.params.arguments.name}}!
+      '{{body.method}} == "resources/read" and {{body.params.uri}} == "ui://app/hello-card"':
+        - comment: 'The view of the hello tool: an HTML page that loads its bundle. npm run deploy writes the bundle URL in bundles[<slug>].views; the first app of the workspace that has the view serves it.'
+        - set:
+            name: _view
+            value: hello-card
+        - repeat:
+            'on': '{{config.bundles}}'
+            do:
+              - conditions:
+                  '{{item.value.views[{{_view}}]}} and !{{_view_url}}':
+                    - set:
+                        name: _view_url
+                        value: '{{item.value.views[{{_view}}]}}'
+        - conditions:
+            '!{{_view_url}}':
+              - set:
+                  name: output
+                  value:
+                    jsonrpc: '2.0'
+                    id: '{{body.id}}'
+                    error:
+                      code: -32002
+                      message: 'View not deployed: run npm run release'
+              - break:
+                  scope: automation
+        - comment: 'The chat frames the view under a CSP: the origin its bundle is served from must be listed.'
+        - set:
+            name: _parts
+            value: '{% split({{_view_url}}, "/") %}'
+        - set:
+            name: output
+            value:
+              jsonrpc: '2.0'
+              id: '{{body.id}}'
+              result:
+                contents:
+                  - uri: ui://app/hello-card
+                    mimeType: text/html;profile=mcp-app
+                    text: <!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><style>html,body{margin:0;background:transparent}</style></head><body><div id="root"></div><script src="{{_view_url}}"></script></body></html>
+                    _meta:
+                      ui:
+                        csp:
+                          resourceDomains:
+                            - '{{_parts[0]}}//{{_parts[2]}}'
+                        prefersBorder: false
+      default:
+        - set:
+            name: output
+            value:
+              jsonrpc: '2.0'
+              id: '{{body.id}}'
+              error:
+                code: -32601
+                message: 'Method not found: {{body.method}}'
+output: '{{output}}'

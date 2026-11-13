@@ -1,8 +1,20 @@
 # `starter-spa`
 
-> Build a Prisme.ai SPA (React frontend + backend automations) locally in VS Code, deploy to a workspace with one command.
+> Build a **full-stack agentic app** on Prisme.ai locally in VS Code: a React front end, declarative automations, MCP tools and an agent that works next to your app. Deploy it to a workspace with one command.
 
-This is the **SPA starter** in the [`prismeai/starter-*`](#related-starters) family. It builds a React + Radix UI + Tailwind app in the **shared** format, the format of the apps created in the Builder before isolated apps. Edit it locally, version it on GitHub, deploy via CI. The Builder now starts new apps in the **isolated** format: see [App format](#app-format-shared-or-isolated) before deploying to a workspace that already has an app.
+What you get, working out of the box:
+
+| Layer | In the starter | In your app |
+|---|---|---|
+| **Front end** | `src/App.tsx`, a guided example of every mechanism | Your pages, in React, with any npm package |
+| **Backend** | `automations/`: a webhook, an event listener, an auth guard | Your business logic as declarative YAML automations, called with the user's session |
+| **Tools** | `automations/mcp.yml`: an MCP server with a `hello` tool | Tools your app and your agent share |
+| **Agent** | `app.agent`: the chat of an agent, next to the app | An agent that sees what is on screen and drives the app with its buttons |
+| **Chat views** | `src/views/HelloCard.tsx`, shown by `hello` in the conversation | Cards, forms, charts your tools show in the chat |
+
+The app is in the **isolated** format, the format the Builder creates by default: it embeds its own libraries (React, Radix, lucide, the Prisme.ai app kit) and reaches the platform only through its `app` object. It ships the same guided example as the Builder's **+** on **Pages** ("Example · Full-stack agentic app"): edit it here, version it in Git, deploy from CI, or open it in the Builder, the code is the same.
+
+Working on an app in the older **shared** format? Use the [`legacy-shared`](https://github.com/prismeai/starter-spa/tree/legacy-shared) branch.
 
 ---
 
@@ -15,11 +27,14 @@ npm install
 cp .env.example .env
 # Fill in PRISMEAI_API_URL, PRISMEAI_ACCESS_TOKEN, PRISMEAI_WORKSPACE_ID
 
-npm run dev       # local Vite dev server with mocked sdk/workspace
-npm run release   # build + deploy
+npm run dev        # the app in your browser, its workspace simulated
+npm run dev:live   # same, with your workspace's webhooks and MCP tools
+npm run release    # build + deploy
 ```
 
-After `npm run release`, your app is live at `<your-platform-ui>/apps/<workspace-slug>`.
+After `npm run release`, the app is live at `<your-platform>/apps/<workspace-slug>` and `/p/<workspace-slug>`.
+
+Nothing is fetched from a public registry beyond your usual npm dependencies: the app kit is in `vendor/` (see [The app kit](#the-app-kit)).
 
 ---
 
@@ -44,142 +59,169 @@ You can list, see days-until-expiry, and revoke your tokens from the same screen
 
 ---
 
+## How it works
+
+```
+ your repo                          the platform, in the user's browser
+ ─────────                          ───────────────────────────────────
+ src/App.tsx ──npm run build──▶ app.<hash>.js ──▶ page /apps/<slug>, /p/<slug>
+   uses the `app` object             (React, kit,      the page mounts the app in a
+                                      your code)        shadow root and answers `app`
+                                                         │
+             app.webhooks.call ──────────────────────────┼──▶ webhook  ─┐
+             app.callServerTool ─────────────────────────┼──▶ mcp      ─┤ _auth checks the
+             app.events.on / emit ───────────────────────┼──▶ events    │ user's session
+             app.agent.open ─────────────────────────────┘   agent chat next to the app
+```
+
+- **One bundle per view**, self-contained: a platform upgrade never changes a deployed app; deploy again to take library fixes.
+- **No token in the app**: the page holds the user's session and makes the calls. The app reaches only its own workspace.
+- **Same code in a page and in the chat**: a view in `src/views/` is built like the app, with the same `app` object, and a tool shows it in the conversation (MCP Apps). The starter's `hello` tool shows `src/views/HelloCard.tsx`: see [Show a view in the chat](#show-a-view-in-the-chat).
+
+---
+
 ## Project structure
 
 ```
 .
-├── automations/                      # DSUL automations — pushed to workspace.automations
-│   ├── _auth.yml                     # auth guard — reject anonymous webhook callers (401)
-│   ├── on-app-greeting-requested.yml
-│   └── v1/status.yml                 # protected webhook — calls _auth first
-├── imports/                          # DSUL imports — installed apps (empty by default)
-├── index.yml                         # workspace metadata (optional; created by npm run pull)
-├── security.yml                      # workspace RBAC (optional; created by npm run pull)
-│
-├── src/                              # React app — what gets bundled and deployed
-│   ├── App.tsx                       # ← edit this. Default export is what the platform renders.
-│   ├── main.tsx                      # local-dev only; the platform never runs this file.
-│   ├── lib/
-│   │   ├── utils.ts                  # cn() helper
-│   │   └── mockHost.ts               # local-dev stub for sdk + workspace props
-│   ├── components/ui/                # shadcn-style components (button, card, dialog, ...)
-│   └── styles/globals.css
-│
-├── scripts/                          # build + deploy + pull tooling (Node)
-│
-├── AGENTS.md                         # AI-agent instructions (CLAUDE.md, .cursorrules point here)
-├── README.md
-├── .env.example                      # copy to .env (gitignored)
-├── package.json
-├── tailwind.config.js
-├── tsconfig.json
-└── vite.config.ts
+├── prisme.app.json          # {"format": "isolated"}: the Builder opens the app in this format
+├── src/
+│   ├── App.tsx              # the app: default export, receives { app }
+│   ├── pages/Home.tsx       # the guided example: one tile per mechanism
+│   ├── pages/Dashboard.tsx  # every step, with the file and the code it uses
+│   ├── components/ui.tsx    # a card, a dialog in app.portalContainer
+│   ├── lib/router.tsx       # routes mirrored in the page URL (app.navigation)
+│   ├── lib/hello.ts         # calls the "hello" MCP tool
+│   ├── styles.css           # plain CSS with the host's theme variables
+│   ├── views/HelloCard.tsx  # a view the hello tool shows in the chat
+│   ├── main.tsx, dev/       # local development only (npm run dev)
+├── automations/             # declarative automations (YAML), pushed by npm run deploy
+│   ├── _auth.yml            # the guard every webhook calls first
+│   ├── v1/status.yml        # a webhook (app.webhooks)
+│   ├── mcp.yml              # the MCP server: tools, and the view of hello (resources/read)
+│   └── on-app-greeting-requested.yml   # an event listener (app.events)
+├── vendor/@prisme.ai/mcp-apps/   # the app kit: JS + types, copied from the platform
+├── scripts/                 # build, deploy, pull, undeploy, sync-kit, check
+└── AGENTS.md                # instructions for AI coding agents
 ```
 
-**Two independent transport channels — by design:**
-
-| What | How it gets to a workspace |
-|---|---|
-| DSUL artifacts (`automations/`, `index.yml`, `security.yml`, `imports/`) | **Workspace export/import zip** — these match the export format 1:1. Zip them up, drop into the in-builder Builder's "Import Workspace", done. Also pushed by `npm run deploy`. |
-| React source (`src/`, `package.json`, configs) | **Git + npm** — clone the repo, `npm install`, edit, `npm run deploy`. The workspace import zip does NOT carry these (and shouldn't — large source trees don't belong in a portable DSUL archive). |
-
-That's why `src/` is a normal JS layout (universal convention + the in-builder Builder hardcodes `src/App.tsx` as the SPA entry) while DSUL stays at root (zip-and-import compatible). The deploy script bridges them: pushes DSUL via the workspace API AND uploads each `src/*` file as `metadata.type=source` so the in-builder Builder's sandbox sees the same code.
-
-You should normally only touch:
-
-- `src/App.tsx` — your app
-- New files under `src/components/`, `src/hooks/`, `src/pages/`, etc.
-- `automations/*.yml` — your backend automations
+Replace the example pages with your own; keep `src/App.tsx` as the entry.
 
 ---
 
-## The host contract
+## The `app` object
 
-In production, the platform loads `dist/bundle.js` and renders the **default export** of `src/App.tsx` with these props:
+`src/App.tsx` exports a component that receives `{ app }`. Everything the app does with the platform goes through it:
+
+| Need | Code | Example in the starter |
+|---|---|---|
+| Who is signed in | `app.user` (absent on a public page) | Who is here |
+| Call a webhook of the workspace | `await app.webhooks.call('v1/status', { method: 'POST', body: {} })` | Your backend |
+| Real-time events | `app.events.on('app.greeting.completed', cb)`, `await app.events.emit('app.greeting.requested', { name })` | Real time |
+| A tool of the workspace MCP server | `await app.callServerTool('hello', { name })` | Shared tools |
+| The app's agent | `app.agent.open()`, `app.updateModelContext(...)` | Your agent |
+| Buttons the agent draws (A2UI) | `app.events.on('agent.action', cb, { scope: 'page' })` | Agent buttons |
+| Routes in the page URL | `app.navigation.current()`, `navigate(path)`, `onChange(cb)` | `src/lib/router.tsx` |
+| Files | `app.files.upload(blob, { public })`, `app.files.download(urlOrBlob, name)` | |
+| Values kept per user and app | `app.storageGet / storageSet / storageDelete / storageKeys` | |
+| Menus and dialogs inside the app | `container={app.portalContainer}` on a portal | `src/components/ui.tsx` |
+
+Each capability is announced by the host: check `app.hasCapability(...)` (`WEBHOOKS_EXTENSION`, `AGENT_EXTENSION`…) before using it in code that can also run in the chat. Types come with the kit: your editor completes `app.` out of the box.
+
+There is no `@prisme.ai/sdk` in an isolated app and no `fetch` with a token: to reach another workspace or an external API, call one of your automations, which makes the call server side, with the user's context.
+
+---
+
+## Your app's agent
+
+An app can have an **agent**: its chat opens next to the app, floating over the page or docked as a column beside it on a wide page. The user asks about what is on screen; the agent answers with its own tools and starters, as in Secure Chat, and can draw buttons the app reacts to.
+
+### Give the app an agent
+
+Pick an agent of Agent Factory, then deploy:
+
+```bash
+# .env
+PRISMEAI_APP_AGENT=<agent id>     # from the agent's URL in Agent Factory
+```
+
+`npm run release` writes it in `bundles[<slug>].agent`. In the Builder, the same setting is **Deploy → Agent of the app**. Unset, the variable keeps the agent already set; empty, it removes it.
+
+The page offers the agent only to a user who can use it (owner, shared with, or published): for anyone else, `app.hasCapability(AGENT_EXTENSION)` is false and there is no chat.
+
+### Drive it from the app
 
 ```ts
-interface AppProps {
-  sdk: SDK                                                // authenticated client
-  user: { id: string; email: string; ... }                // current user
-  workspace: { id: string; slug: string; name: string }   // the workspace hosting your app
-  backends?: Record<string, { slug: string }>             // optional named backend workspaces
-  agents?: Record<string, string>                         // optional pre-resolved agent IDs
+import { AGENT_EXTENSION } from '@prisme.ai/mcp-apps'
+
+if (app.hasCapability(AGENT_EXTENSION)) {
+  const name = app.agent.name()          // "Sales assistant"
+  await app.agent.open()                 // opens its chat next to the app
+  await app.agent.close()
 }
 ```
 
-> **Built-in apps and customer apps share the exact same loader and contract.** The platform's `AppRenderer` resolves a built-in app from a static manifest and a custom app via `GET /v2/pages/<slug>/_bundle`, but both paths converge on the same render call. What you build with this starter is loaded the same way as a first-party app shipped in the platform docker image.
+Call `open()` from a user action (a click): the page limits bursts of opens and closes.
 
-Locally (`npm run dev`), `src/main.tsx` provides a stub via `src/lib/mockHost.ts` so the demo renders without a live backend.
-
-### App format: shared or isolated
-
-A deployed app has a format, stored in `config.value.bundles[<slug>].format`:
-
-| | **Shared** (this starter) | **Isolated** (Builder default for new apps) |
-|---|---|---|
-| Bundle | One CJS bundle, `module.exports.default` | One self-contained bundle per view |
-| Libraries | Provided by the platform at runtime (`scripts/externals.mjs`) | Copied into the bundle at build time |
-| Platform access | Host props (`sdk`, `user`, `workspace`) | The `app` object (`app.webhooks`, `app.events`, `app.user`…) |
-| In the chat | No | Its views can show in the chat (MCP Apps) |
-
-Shared apps keep working: the format is never switched automatically, and an entry without `format` is shared. Two consequences for this starter:
-
-- `npm run deploy` **refuses** to deploy over an isolated app, before writing anything: it would replace the app and overwrite its Builder sources with this repo's. Deploy to another key (`PRISMEAI_BUNDLE_SLUG`) or workspace, or set `PRISMEAI_ALLOW_FORMAT_SWITCH=true` to replace it on purpose.
-- `npm run pull` warns when the workspace app is isolated: its sources use the `app` object, which this build does not provide.
-
-To build an isolated app, start it from the Builder (**+** next to **Pages**). See [Isolated apps](https://docs.prisme.ai/products/ai-builder/isolated-apps) in the documentation.
-
-### Calling your workspace
-
-The starter ships with two reference patterns — see `src/App.tsx` for full code.
-
-**REST webhook** (synchronous request → JSON response):
+### Tell it what is on screen
 
 ```ts
-const url = sdk.host + '/workspaces/slug:' + workspace.slug + '/webhooks/v1/status'
-const res = await fetch(url, {
-  method: 'POST',
-  headers: { 'Content-Type': 'application/json' },
-  credentials: 'include',
-  body: JSON.stringify({}),
+await app.updateModelContext({
+  content: [{ type: 'text', text: 'The user is looking at the order #1042: 3 items, 1,200 EUR, pending approval.' }],
 })
-const data = await res.json()
 ```
 
-The matching automation calls the `_auth` guard first, so anonymous callers get a
-401 instead of a response (see [Webhook auth](#webhook-auth-important) below):
+The latest context goes with the user's next question, so "can I approve this?" needs no copy-paste. Update it when the screen changes (a selected record, a filter); keep it short and leave secrets out.
 
-```yaml
-when:
-  endpoint: v1/status
-do:
-  - _auth:                       # reject anonymous callers with 401
-      output: auth
-  - conditions:
-      '{{auth.error}}':
-        - set:
-            name: $http
-            value: { status: '{{auth.status}}' }
-        - set:
-            name: result
-            value: { error: '{{auth.message}}', code: '{{auth.error}}' }
-        - break:
-            scope: automation
-  - set:
-      name: result
-      value: { status: ok, timestamp: '{{run.date}}' }
-output: '{{result}}'
-```
+### React to its buttons (A2UI)
 
-**WebSocket events** (asynchronous fire-and-listen):
+The agent can answer with interactive components (A2UI): cards, forms, buttons. A click reaches the app at once, as a page event:
 
 ```ts
-const events = await sdk.streamEvents(workspace.id, { 'source.sessionId': true })
-events.on('app.greeting.completed', (data) => { /* ... */ })
-events.emit('app.greeting.requested', { name: 'World' })
+app.events.on('agent.action', (event) => {
+  const { name, data } = event.payload as { name: string; data: Record<string, unknown> }
+  if (name === 'approve') openApprovalForm(data)
+}, { scope: 'page' })
 ```
 
-The `'source.sessionId': true` filter ensures you only receive events tied to *this* user session. The matching automation listens for `app.greeting.requested` and emits `app.greeting.completed` back.
+`name` is the action the agent wrote on the button, `data` the values of its form. The agent needs an A2UI tool that waits for the user (`wait_for_action: true`). Nothing goes to the server: the app decides what the click does.
+
+### Share your tools with it
+
+Add the app's MCP server to the agent (Agent Factory → the agent → MCP servers):
+
+- URL: `<PRISMEAI_API_URL>/workspaces/<workspace id>/webhooks/mcp`
+- Header: `x-prismeai-api-key: <org API key>` (`mcp` refuses anonymous callers)
+
+The app calls `hello` with `app.callServerTool`, the agent calls the same tool in the conversation, and the result shows as the `hello-card` view (next section). One backend, two ways in.
+
+### Try it in the starter
+
+The home page's **Your agent** and **Agent buttons (A2UI)** tiles run the code above (`src/pages/Dashboard.tsx`, `AgentStep` and `AgentButtonsStep`):
+
+1. Set `PRISMEAI_APP_AGENT`, `npm run release`, open `/apps/<slug>`.
+2. **Your agent** → **Ask** (followed by the agent's name): the chat opens, and knows you are on that step.
+3. **Agent buttons (A2UI)** → open the agent, ask "Show me an approval card for a 1,200 EUR laptop", click **Approve**: the app shows the action it received.
+
+Locally, `npm run dev` simulates the agent: `open()` sends an `agent.action` after a moment, so the A2UI step can be tried without the platform.
+
+---
+
+## Show a view in the chat
+
+When an agent calls the `hello` tool, the chat shows `src/views/HelloCard.tsx` under the tool call: the greeting, a button that calls `hello` again from the view, and one that proposes a message to the user.
+
+1. **The view**: a file in `src/views/` (`HelloCard.tsx` → view `hello-card`), a component that receives `{ app }`. `useToolInput(app)` and `useToolResult(app)` (from `@prisme.ai/mcp-apps/react`) give the tool call it shows.
+2. **The build**: `npm run build` makes `dist/hello-card.<hash>.js`; `npm run deploy` writes its URL in `bundles[<slug>].views["hello-card"]`.
+3. **The tool**: in `automations/mcp.yml`, `tools/list` declares `hello` with `_meta.ui.resourceUri: ui://app/hello-card`.
+4. **The page**: `mcp` answers `resources/read` for `ui://app/hello-card` with an HTML page that loads the view's bundle, and lists the origin of that file in `_meta.ui.csp.resourceDomains` (the chat frames the view under this CSP).
+5. **The agent**: give an agent the app's MCP server ([Share your tools with it](#share-your-tools-with-it)) and ask it to say hello to someone.
+
+The view's actions go through the agent: `app.callServerTool` runs with the agent's tool permissions and approvals, `app.sendMessage` asks the user before filling the composer. A view has no `app.webhooks` and no workspace events in the chat.
+
+Locally, `npm run dev` opens a view with `?view=<name>` (`http://localhost:5173/?view=hello-card`), as if the tool had just shown it.
+
+To add a view: a file in `src/views/`, a tool that points at `ui://app/<view-name>`, and a `resources/read` branch in `mcp.yml` like the `hello-card` one. See [MCP Apps views](https://docs.prisme.ai/products/agent-factory/mcp-app-views) for the details (display modes, CSP, errors).
 
 ---
 
@@ -190,9 +232,7 @@ automation is reachable at `POST /workspaces/slug:<slug>/webhooks/v1/status` by
 **anyone with the URL** — no session, no token. The platform does not gate webhooks
 for you; the automation must gate itself.
 
-Early versions of this starter shipped `v1/status` with no guard, so the endpoint
-was open. That was the top piece of feedback we got. **How you gate a webhook is
-your call** — the starter ships one simple, sensible default (the `_auth` guard),
+**How you gate a webhook is your call** — the starter ships one simple, sensible default (the `_auth` guard),
 but it is one option among several (see [Choosing an auth strategy](#choosing-an-auth-strategy)).
 
 The shipped default: every protected webhook calls `_auth` first:
@@ -214,13 +254,15 @@ anonymous callers with `401`. It recognises three caller types:
 
 | `auth.auth_type` | When | `auth.user_id` |
 |---|---|---|
-| `user` | Browser call with `credentials: 'include'`, or a personal access token | the user's id |
+| `user` | The app (`app.webhooks`, `app.callServerTool`: the page adds the session), or a personal access token | the user's id |
 | `apikey` | Org-scoped API key (`x-prismeai-api-key`) | the API key id |
 | `workspace` | Another workspace listed in `config.trusted_source_workspaces` (opt-in) | — |
 
-Because the SPA's `fetch` already sends `credentials: 'include'` (and `Authorization`
-when `sdk.token` is set), a logged-in user sails through; an unauthenticated visitor
-is rejected. **The front end changed nothing — the automation is what closed the hole.**
+`app.webhooks.call()` and `app.callServerTool()` go through the page, which adds the
+signed-in user's session: a logged-in user sails through, an anonymous caller is
+rejected. The app never holds a token. An **agent** given the `mcp` server calls it
+server to server: set an org API key in the server's headers (`x-prismeai-api-key`)
+so it passes as `apikey`.
 
 ### Choosing an auth strategy
 
@@ -328,20 +370,28 @@ When you add a `when: endpoint:` automation, add the `_auth` block at the top **
 you deliberately want it open** (then use `allow_public: true` so the intent is
 explicit in the YAML). `on-app-greeting-requested.yml` is an event listener
 (`when: events:`), not a webhook — it is only reachable by callers already allowed to
-emit events into the workspace, so it needs no guard.
+emit events into the workspace, so it needs no guard. `mcp` is a webhook like any
+other: it is guarded.
 
 ---
 
 ## Local development
 
 ```bash
-npm run dev
+npm run dev        # http://localhost:5173
+npm run dev:live   # same, wired to your workspace
 ```
 
-Opens `http://localhost:5173`. The mock host intercepts:
+`src/main.tsx` mounts the app with a local `app` object (`src/dev/devApp.ts`), checked by TypeScript against the kit's:
 
-- `sdk.streamEvents(...)` — returns an in-memory event bus that locally echoes `app.greeting.requested` → `app.greeting.completed`.
-- The webhook URL is built from `sdk.host`. If you set `VITE_PRISMEAI_API_URL` and `VITE_PRISMEAI_API_KEY` in `.env`, the REST tab will hit your real workspace.
+| | `npm run dev` | `npm run dev:live` |
+|---|---|---|
+| `app.webhooks`, `app.callServerTool` | Simulated answers | Your workspace, through the Vite proxy (`/__prisme`), which adds the token of `.env` server side: the browser never sees it |
+| `app.user` | A local user | You (`/me` with your token) |
+| `app.events` | Simulated: `app.greeting.requested` answers `app.greeting.completed` | Simulated |
+| `app.agent` | Simulated: `open()` then sends an `agent.action`, to try the A2UI step | Simulated |
+
+`dev:live` calls the deployed automations: run `npm run deploy` once first. The agent and the chat need the platform: deploy, then open `/apps/<slug>`.
 
 ---
 
@@ -351,43 +401,36 @@ Opens `http://localhost:5173`. The mock host intercepts:
 npm run build
 ```
 
-Compiles `src/App.tsx` → `dist/bundle.js` using esbuild:
+One self-contained bundle per view, as the Builder builds them:
 
-- **Format**: CommonJS — the platform's loader expects `module.exports.default`.
-- **Externals**: React, Radix, lucide-react, clsx, tailwind-merge, class-variance-authority, jotai, `@prisme.ai/sdk` — provided by the platform at runtime. **Never** bundle them or you will duplicate React and break hooks.
-- **Minified**, no source map.
+- `src/App.tsx` → `dist/app.<hash>.js`: the full app, shown at `/apps/<slug>` and `/p/<slug>`;
+- `src/views/<Name>.tsx` → `dist/<name>.<hash>.js`: a view a tool shows in the chat (`HelloCard.tsx` → `hello-card`);
+- `dist/manifest.json`: the versions copied in (kit, React, your dependencies) and the views.
 
-Full externals list: `scripts/externals.mjs`.
+Each bundle is an IIFE with everything in it; its generated entry starts your component with the kit's `mountView`. Imported `.css` files go to the kit, which puts them where the view renders (its shadow root in a page, its frame in the chat); a `:root` rule also gets a `:host` twin, so theme variables apply in both. Size guard: warning above 1 MB, failure above 4 MB per view (`PRISMEAI_BUNDLE_SIZE_WARN`, `PRISMEAI_BUNDLE_SIZE_MAX`).
 
 ---
 
 ## Deploy
 
 ```bash
-npm run deploy        # uploads + patches workspace
-npm run release       # alias for npm run build && npm run deploy
+npm run deploy        # uploads + patches the workspace
+npm run release       # npm run build && npm run deploy
 ```
 
-The deploy script checks the app format, then runs these steps in order:
-
-| # | Step | What it writes | Skip with |
+| # | Step | What it does | Skip with |
 |---|---|---|---|
-| — | **Format guard** | Refuses if `bundles[<slug>]` is an isolated app (see [App format](#app-format-shared-or-isolated)). Read only. | `PRISMEAI_ALLOW_FORMAT_SWITCH=true` |
-| 0 | **Conflict detection** | Reads `.prismeai/last-pull.json`, refuses if remote diverged from your last pull. Pre-flight check; no state change. | `--force` flag, `PRISMEAI_FORCE=true` |
-| 1 | **Automations sync** | Walks `automations/**/*.yml`, parses each, upserts via `POST/PATCH /workspaces/:id/automations[/:slug]`. Deletes any remote slug not present locally. | `PRISMEAI_SKIP_AUTOMATIONS_SYNC=true` |
-| 2 | **Source files sync** | Walks `src/` + root config files, SHA-256 hashes each, diffs against existing `metadata.type=source` files. Uploads new, replaces changed, deletes removed. | `PRISMEAI_SKIP_SOURCE_SYNC=true` |
-| 3 | **Bundle upload** | `POST /workspaces/:id/files` (`public=true`) — returns the CDN URL. | — |
-| 4 | **embed.js upload** | Fetches `${PRISMEAI_PLATFORM_URL}/embed.js` and uploads as a public file. Only needed for 3rd-party `<script>` embedding. | unset `PRISMEAI_PLATFORM_URL` |
-| 5 | **Patch workspace config** | `PATCH /workspaces/:id` merges `{ bundle, embed?, version, name, builtAt, public }` into `config.value.bundles[<slug>]`, keeping the other keys (`metadata`…) and dropping the isolated-only ones (`format`, `views`, `manifest`). **This is the live pointer `AppRenderer` reads on every page load.** | — |
-| 6 | **Cleanup orphan bundles** | Lists all public `bundle.js` / `embed.js` files; deletes any not currently referenced in `bundles[*]`. Stops storage growth. | `PRISMEAI_SKIP_BUNDLE_CLEANUP=true` |
-| 7 | **Smoke test** | Resolves `/pages/<slug>/_bundle`, fetches the bundle JS, parse-checks via `new Function(...)`, verifies the CJS exports pattern is present. Catches "deploy succeeded but bundle is broken". | `PRISMEAI_SKIP_SMOKE=true` |
-| 8 | **Version snapshot** | `POST /workspaces/:id/versions` creates a Prisme.ai workspace version. | `PRISMEAI_SKIP_VERSION_SNAPSHOT=true` |
+| — | **Format guard** | Refuses if `bundles[<slug>]` is an app in the shared format: deploying would replace it and its sources. Read only. | `PRISMEAI_ALLOW_FORMAT_SWITCH=true` |
+| 0 | **Conflict detection** | Refuses if the workspace changed since your last pull (`.prismeai/last-pull.json`). No state change. | `--force`, `PRISMEAI_FORCE=true` |
+| 1 | **Automations sync** | Upserts `automations/**/*.yml`; deletes remote automations not present locally. | `PRISMEAI_SKIP_AUTOMATIONS_SYNC=true` |
+| 2 | **Source files sync** | Uploads `src/`, `prisme.app.json` and the root configs as `metadata.type=source` files (SHA-256 diff), so the Builder opens the same code. | `PRISMEAI_SKIP_SOURCE_SYNC=true` |
+| 3 | **View bundles upload** | Uploads each `dist/<view>.<hash>.js` as a public file. | — |
+| 4 | **Patch workspace config** | Merges into `config.value.bundles[<slug>]`: `format: 'isolated'`, `bundle` (the `app` view), `views`, `manifest`, `version`, `name`, `builtAt`, `public`, and `mcp` / `agent` when set. Keeps the other keys (`metadata`…), drops `embed`. **The live pointer.** | — |
+| 5 | **Cleanup** | Deletes public bundle files (`bundle.js`, `embed.js`, `<view>.<hash>.js`) no app of the workspace points at. | `PRISMEAI_SKIP_BUNDLE_CLEANUP=true` |
+| 6 | **Smoke test** | Resolves `/pages/<slug>/_bundle`, checks the entry is isolated, fetches and parses each view. | `PRISMEAI_SKIP_SMOKE=true` |
+| 7 | **Version snapshot** | `POST /workspaces/:id/versions`. | `PRISMEAI_SKIP_VERSION_SNAPSHOT=true` |
 
-After successful deploy, the script also refreshes `.prismeai/last-pull.json` with the current workspace state so the next deploy doesn't trip conflict detection on changes you just pushed.
-
-After deploy, hard-reload your browser to bypass any cached bundle.
-
-If a step fails mid-deploy, the script prints a structured summary and per-step recovery guidance — what completed, what failed, what to do next. The atomic boundary is step 5: failures BEFORE it leave the live UI on the previous version (safe to retry); failures AFTER mean deploy succeeded but a side-effect failed (also safe).
+On failure the script prints what completed and what to do next. The atomic boundary is step 4: before it, users still see the previous version.
 
 ### Multi-environment
 
@@ -410,71 +453,55 @@ All `.env*` files except `.env.example` are gitignored.
 | Var | Required | Purpose |
 |---|---|---|
 | `PRISMEAI_API_URL` | yes | Your platform's API URL **including `/v2`** (e.g. `https://api.acme.example.com/v2`) |
-| `PRISMEAI_ACCESS_TOKEN` | one of these | Personal access token (`at:<uuid>`). Sent as `Authorization: Bearer ...` |
-| `PRISMEAI_API_KEY` | one of these | Org-scoped API key. Sent as `x-prismeai-api-key`. Use access token instead when possible. |
+| `PRISMEAI_ACCESS_TOKEN` | one of these | Personal access token (`at:<uuid>`), sent as `Authorization: Bearer …` |
+| `PRISMEAI_API_KEY` | one of these | Org-scoped API key, sent as `x-prismeai-api-key` |
 | `PRISMEAI_WORKSPACE_ID` | yes | Short ID of the target workspace (e.g. `B4eoHS6`) |
-| `PRISMEAI_PLATFORM_URL` | no | UI host (e.g. `https://app.acme.example.com`). Only needed for embed.js. |
-| `PRISMEAI_PUBLIC` | no | `true` to open the app without login — renderer skips `/v2/me`, `user` is `null`. `false` forces sign-in; unset keeps the current setting of the deployed entry. |
-| `PRISMEAI_BUNDLE_SLUG` | no | Override the bundles[<key>] (default: workspace slug) |
-| `PRISMEAI_APP_VERSION` | no | Version label written to workspace config (default `1.0.0`) |
-| `PRISMEAI_HTTP_TIMEOUT` | no | Per-request timeout in ms (default `30000`) |
-| `PRISMEAI_HTTP_RETRIES` | no | Max retries on 5xx / network errors (default `3`) |
-| `PRISMEAI_BUNDLE_SIZE_WARN` | no | Bundle size warn threshold in bytes (default `512000` = 500 KB) |
-| `PRISMEAI_BUNDLE_SIZE_MAX` | no | Bundle size hard limit in bytes (default `2097152` = 2 MB) |
+| `PRISMEAI_APP_AGENT` | no | Agent whose chat the app opens (`app.agent`). Unset keeps the current one; empty removes it. |
+| `PRISMEAI_MCP_WEBHOOK` | no | Webhook of the MCP endpoint the views call (default `mcp`) |
+| `PRISMEAI_PUBLIC` | no | `true`: open without sign-in (`app.user` absent). `false` forces sign-in; unset keeps the current setting. |
+| `PRISMEAI_PLATFORM_URL` | no | Your platform's UI URL, for `npm run sync-kit` and `npm run check` |
+| `PRISMEAI_BUNDLE_SLUG` | no | Override the `bundles[<key>]` (default: workspace slug) |
+| `PRISMEAI_APP_VERSION` | no | Version label (default `1.0.0`) |
+| `PRISMEAI_ALLOW_FORMAT_SWITCH` | no | `true` to replace an app in the shared format |
+| `PRISMEAI_HTTP_TIMEOUT` / `PRISMEAI_HTTP_RETRIES` | no | Per-request timeout in ms (default `30000`) / retries on 5xx (default `3`) |
+| `PRISMEAI_BUNDLE_SIZE_WARN` / `PRISMEAI_BUNDLE_SIZE_MAX` | no | Per-view size thresholds in bytes (default 1 MB / 4 MB) |
 | `PRISMEAI_FORCE` | no | `true` to bypass conflict detection |
-| `PRISMEAI_ALLOW_FORMAT_SWITCH` | no | `true` to replace an isolated app (Builder) with this shared bundle |
-| `PRISMEAI_SKIP_AUTOMATIONS_SYNC` | no | `true` to skip step 1 |
-| `PRISMEAI_SKIP_SOURCE_SYNC` | no | `true` to skip step 2 |
-| `PRISMEAI_SKIP_BUNDLE_CLEANUP` | no | `true` to skip step 6 |
-| `PRISMEAI_SKIP_SMOKE` | no | `true` to skip step 7 |
-| `PRISMEAI_SKIP_VERSION_SNAPSHOT` | no | `true` to skip step 8 |
+| `PRISMEAI_SKIP_AUTOMATIONS_SYNC`, `_SOURCE_SYNC`, `_BUNDLE_CLEANUP`, `_SMOKE`, `_VERSION_SNAPSHOT` | no | `true` to skip that step |
 
 ---
 
 ## In-platform vs standalone (public)
 
-Your deployed app is served at **both** URLs, always:
+The app is served at **both** URLs, always:
 
-- **`/apps/<slug>`** — wrapped in the Platform Shell (sidebar, top-bar).
-- **`/p/<slug>`** — standalone, full-viewport (no platform chrome).
+- **`/apps/<slug>`**: in the platform shell (sidebar, top bar);
+- **`/p/<slug>`**: standalone, full viewport. A route of the app shows as `/p/<slug>#/<route>`.
 
-The visitor's URL picks the chrome — you don't have to choose.
-
-- **`public: true`** (`PRISMEAI_PUBLIC=true`): the renderer skips the `/v2/me`
-  call, passes `user: null`, and the `_bundle` endpoint is public — visitors open
-  the app **without signing in**. Ideal for public-facing pages; your app gates
-  anything that actually needs a session.
-
-> A public app has no session user, so any webhook it calls hits `_auth` as an
-> anonymous caller and gets `401`. For the endpoints such an app is allowed to
-> call without login, add `allow_public: true` to their `_auth` block (see
-> [Webhook auth](#webhook-auth-important)). Keep everything else closed.
-
-Enable public (no login) from `.env`:
-
-```bash
-PRISMEAI_PUBLIC=true
-npm run release   # → reachable at /apps/<slug> and /p/<slug>, no login required
-```
-
-> Note: in standalone mode the host still mounts your app inside its own
-> react-router `<Router>`, so do **not** render your own `<BrowserRouter>` /
-> `<HashRouter>` (it throws "Router inside Router"). Drive routing from the
-> hash, or let the host route.
+With **`PRISMEAI_PUBLIC=true`** the app opens without sign-in: `app.user` is absent, and every webhook it calls reaches `_auth` as an anonymous caller (`401`). Add `allow_public: true` to the `_auth` call of the endpoints such an app may call without sign-in; keep the others closed. The example's home page asks visitors to sign in before trying a step.
 
 ---
 
-## Undeploy
+## The app kit
+
+`vendor/@prisme.ai/mcp-apps/` holds the kit an isolated app is built with (about 20 KB, plus its types):
+
+| Import | What |
+|---|---|
+| `@prisme.ai/mcp-apps` | `McpApp` (the `app` object), the capability names, the types |
+| `@prisme.ai/mcp-apps/react` | `useToolInput`, `useToolResult`, `useHostContext` |
+| `@prisme.ai/mcp-apps/boot` | `mountView`: started by the generated entry, you do not call it |
+
+It is copied into every bundle, like React, so the app keeps the kit it was built with. The platform stays compatible with older kits; a kit newer than your platform negotiates: a capability your platform does not have yet is refused cleanly (check `app.hasCapability`). `vendor/@prisme.ai/mcp-apps/kit.json` gives its version.
+
+Every platform serves its own kit under `/vendor/`, the files its Builder uses. To build with exactly the kit of the platform you deploy to:
 
 ```bash
-npm run undeploy                  # remove bundles[<workspace.slug>] from workspace config
-npm run undeploy -- --slug=foo    # remove bundles[foo] (different key)
-npm run undeploy -- --purge-files # also DELETE the underlying bundle/embed files
+npm run sync-kit                                        # PRISMEAI_PLATFORM_URL from .env
+npm run sync-kit -- --from=https://app.acme.example.com
+git add vendor && git commit -m "Take the platform's app kit"
 ```
 
-Inverse of step 5. Removes the live pointer so `/apps/<slug>` no longer serves a bundle. Source files and automations are left intact (they may be shared across multiple bundles or you may want to keep them for re-deploy). Without `--purge-files`, the bundle artifacts stay in workspace storage — next `npm run deploy` will clean them up via step 6.
-
-Idempotent: running on a workspace that has no `bundles[<slug>]` is a noop.
+---
 
 ## Pull workspace state
 
@@ -511,53 +538,30 @@ When **no manifest** exists (first deploy from a clean clone), conflict detectio
 
 ---
 
-## Choose your source of truth
+## The repo and the Builder
 
-Both this repo and the in-builder Builder UI can write source files and automations to the same workspace. To avoid surprises, pick **one** of these three modes per workspace and commit to it:
+The repo and the Builder hold the same format and the same files (`npm run deploy` pushes `src/` and `prisme.app.json`; `npm run pull` brings back what the Builder changed), so a teammate can open the app in the Builder, preview it and deploy it.
 
-### Mode A — Git only (recommended for customer-built apps)
+One difference: this repo builds with **any npm package**, the Builder only with the libraries its platform provides. `npm run check` lists the imports the Builder of your platform does not provide:
 
-All edits happen in VS Code. Nobody opens the in-builder Builder for source changes.
+```bash
+npm run check   # PRISMEAI_PLATFORM_URL from .env, or -- --from=<url>
+```
 
-- Set `PRISMEAI_SKIP_SOURCE_SYNC=true` to avoid leaving stale files in the workspace.
-- The deploy script then only writes the bundle + config + version snapshot.
-- Code review happens in your git host (GitHub PRs, GitLab MRs).
+The app still builds and deploys from the repo; opened in the Builder, its preview and Deploy would fail. Pick a source of truth per workspace:
 
-### Mode B — Builder only
-
-All edits happen in the platform UI. This starter isn't useful for that workflow — work directly in the in-builder Builder and use its own Deploy button.
-
-### Mode C — Hybrid
-
-Both ends edit. Treat the **workspace as the source of truth** and **always pull before deploying**.
-
-1. Pull workspace state into local before editing.
-2. Commit the pulled state to git as a checkpoint.
-3. Make local edits.
-4. `npm run release`.
-5. Conflict detection refuses if a teammate edited remotely while you were working — pull first.
+- **Git only**: edits in VS Code, review in pull requests. `PRISMEAI_SKIP_SOURCE_SYNC=true` keeps the sources out of the workspace if nobody opens the Builder.
+- **Hybrid**: both edit; the workspace is the source of truth. `npm run pull` before editing, commit, edit, `npm run release`. Conflict detection refuses a deploy over a teammate's changes. Keep `npm run check` clean.
 
 ---
 
 ## Constraints worth knowing
 
-### Tailwind / CSS
-
-`npm run build` compiles `src/styles/globals.css` with Tailwind and **injects it into the bundle** at runtime (a `<style id="prismeai-app-styles">` appended on load). So your theme overrides, custom utilities, `@keyframes` and `@font-face` ship with the app — the deployed result matches local dev.
-
-> Earlier versions of this starter relied solely on the platform's shared stylesheet, so anything beyond the platform's own utility set rendered unstyled in production. That's fixed: your compiled CSS is bundled. The platform stylesheet still loads too; your injected `<style>` is appended last, so your rules win. Keep the bundle lean — large `@font-face` files are better referenced by URL (CORS-enabled) than base64-embedded.
-
-### lucide-react icons
-
-The platform pre-loads a curated subset (~250 icons) for tree-shaking. Common ones (`ZapIcon`, `BotIcon`, `GlobeIcon`, `Loader2Icon`, `CheckCircleIcon`, ...) are guaranteed. If you import an icon and it renders as `undefined` at runtime (React error #130), it isn't in the subset — pick a different one or open a request to add it. **Brand logos (e.g. `Linkedin`) are typically NOT in the subset** — use an inline `<svg>` for those.
-
-### Authentication context
-
-When the platform mounts your app, the user is already authenticated and `sdk.token` is set. You do not need to sign in. For REST calls, **use `credentials: 'include'`** so the browser sends the auth cookie. The example in `src/App.tsx` does this.
-
-### Bundle size
-
-Aim to keep your bundle under ~500 KB minified. Tree-shake unused exports, code-split heavy panels with `React.lazy`, and don't import `lodash` whole — use the per-method imports.
+- **Styles stay inside the app.** In a page the app renders in a shadow root: the platform's CSS does not reach it, and yours does not leak out. The host gives its theme as CSS variables (`--color-background-primary`, `--color-text-primary`…, light or dark): use them with a fallback, as `src/styles.css` does.
+- **Portals**: render menus, dialogs and tooltips in `app.portalContainer`, or they lose the app's styles.
+- **No platform modules**: `@prisme.ai/sdk` and `@prisme/*` fail the build. Use the `app` object.
+- **No router of your own on the page URL**: use `app.navigation` (`src/lib/router.tsx`); the host mirrors the route in the URL.
+- **Bundle size**: everything is in the bundle; keep heavy dependencies out of the views shown in the chat.
 
 ---
 
@@ -594,17 +598,18 @@ cmdkey /generic:prismeai-sandbox /user:%USERNAME% /pass
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| `Cannot find module 'react'` at runtime | esbuild bundled React instead of treating it as external | Check `scripts/externals.mjs` — the package must be listed |
-| `XIcon is not defined` | Icon not in the platform's curated lucide subset | Pick another icon |
-| Webhook returns 401 | The `_auth` guard rejected the caller — either the request carries no session/token, or the endpoint is genuinely meant to be public | Logged-in user: ensure `credentials: 'include'` (and `Authorization` when `sdk.token` is set) on the `fetch()`. Public endpoint: add `allow_public: true` to the `_auth` call. See [Webhook auth](#webhook-auth-important) |
-| Webhook returns 404 | Automation slug mismatch — `endpoint:` in the YAML must equal the path in the URL | Open the automation in the Builder, copy its endpoint |
-| `streamEvents` never connects | Wrong workspace identifier | Use `workspace.id` (UUID), not `workspace.slug` — the events service requires the UUID for non-`slug:` identifiers |
-| `npm run deploy` → `404 /v2/v2/...` | `PRISMEAI_API_URL` doesn't include `/v2`, or includes it twice | Set it to `https://api.example.com/v2` (one `/v2`, no trailing slash) |
-| Deploy succeeds but app doesn't update | CDN cache | Hard-reload (Cmd+Shift+R) or wait ~30s |
-| `Failed to upload bundle: server returned no file` | Token/key lacks write access to that workspace | Check the workspace's RBAC; the token's owner must be a workspace admin |
-| Deploy fails with 401 | Token expired or wrong | Mint a new one in **Settings → Access Tokens**; re-check `PRISMEAI_API_URL` includes `/v2` |
-| Deploy refused: `bundles[<slug>] is an isolated app` | The app was created or deployed isolated from the Builder | Deploy to another `PRISMEAI_BUNDLE_SLUG`, or set `PRISMEAI_ALLOW_FORMAT_SWITCH=true` to replace it. See [App format](#app-format-shared-or-isolated) |
-| Deploy refused after a teammate edited in Builder | Conflict detection working as intended | Run `npm run pull` to fetch their changes, review with `git diff`, then `npm run release` |
+| Deploy refused: `bundles[<slug>] is an app in the shared format` | The workspace holds an app built before isolated apps | Deploy to another `PRISMEAI_BUNDLE_SLUG` or workspace, `PRISMEAI_ALLOW_FORMAT_SWITCH=true` to replace it, or use the `legacy-shared` branch |
+| Build: `@prisme.ai/sdk is a platform module` | An import of the platform SDK | Use the `app` object (`app.webhooks`, `app.callServerTool`…) |
+| Build: `The kit is missing` | `vendor/` was deleted | `git checkout vendor` or `npm run sync-kit` |
+| A webhook or tool answers 401 | `_auth` rejected the caller: anonymous visitor, or an agent without credential | Signed-in app: check the user is signed in. Agent: set an org API key in its MCP server headers. Public endpoint: `allow_public: true` |
+| Webhook returns 404 | The path differs from the automation's `endpoint` | Use the `endpoint` of the YAML in `app.webhooks.call(...)` |
+| `npm run dev:live` fails at start | Missing `.env` values | Set `PRISMEAI_API_URL`, `PRISMEAI_WORKSPACE_ID` and a token |
+| `npm run deploy` → `404 /v2/v2/...` | `/v2` missing or doubled in `PRISMEAI_API_URL` | One `/v2`, no trailing slash |
+| Deployed app unstyled | CSS not imported from the app's code | Import it in `src/App.tsx` (`import './styles.css'`) |
+| A dialog loses its styles | Rendered outside the app | `container={app.portalContainer}` on its portal |
+| Deploy fails with 401 | Token expired or wrong | Mint a new one in **Settings → Access Tokens** |
+| Deploy refused after a teammate edited in the Builder | Conflict detection | `npm run pull`, review with `git diff`, then `npm run release` |
+| Your agent does not see the app's tools | The agent calls `mcp` without credential | Add the workspace's `mcp` webhook to the agent with an org API key header |
 
 ---
 
@@ -621,22 +626,17 @@ Two recipes ship with the starter:
 |---|---|
 | GitHub | Repo **Settings → Secrets and variables → Actions → New repository secret** |
 | GitLab | Project **Settings → CI/CD → Variables** — mark them **Masked** and **Protected** |
-| Both | Add `PRISMEAI_API_URL`, `PRISMEAI_ACCESS_TOKEN`, `PRISMEAI_WORKSPACE_ID`. Optional: `PRISMEAI_PLATFORM_URL`, `PRISMEAI_BUNDLE_SLUG` |
+| Both | Add `PRISMEAI_API_URL`, `PRISMEAI_ACCESS_TOKEN`, `PRISMEAI_WORKSPACE_ID`. Optional: `PRISMEAI_BUNDLE_SLUG`, `PRISMEAI_APP_AGENT` |
 
 The token used in CI should be a service-account or shared-account access token with explicit expiry. Rotate quarterly. Don't reuse a personal access token.
 
 ## Related starters
 
-This is part of the [`prismeai/starter-*`](https://github.com/orgs/prismeai/repositories?q=starter-) family:
-
 | Repo | What it's for |
 |---|---|
-| **`prismeai/starter-spa`** (this one) | React SPA + DSUL automations — full UI for end users |
+| **`prismeai/starter-spa`** (this one) | Isolated app + declarative automations: a UI for end users, its agent and its tools |
+| `prismeai/starter-spa`, branch `legacy-shared` | The same for apps in the shared format (maintenance only) |
 | `prismeai/starter-mcp` | Workspace exposing automations as MCP tools, no UI |
-| `prismeai/starter-webhooks` | Workspace with webhook-triggered automations only |
-| `prismeai/starter-agent` | Agent-factory style workspace for LLM agents |
-
-> Some starters in the family may not be published yet — check the org page for the current set.
 
 ---
 
