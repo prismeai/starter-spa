@@ -13,6 +13,26 @@ export const KIT = '@prisme.ai/mcp-apps'
 export const BOOT_SPECIFIER = `${KIT}/boot`
 /** A view bundle as deployed: `<view>.<16 hex>.js`. */
 export const VIEW_FILE = /^[a-z0-9-]+\.[0-9a-f]{16}\.js$/
+/** Workspace assets folder of the views, under the app folder (the app's sharing). */
+export const ISOLATED_FOLDER = 'dist/app/isolated'
+const SHARINGS = ['private', 'authenticated', 'public']
+
+/**
+ * Who can open the app: PRISMEAI_SHARING, else PRISMEAI_PUBLIC=true (public),
+ * else what the deployed entry says (`sharing`, or `public` of older deploys),
+ * else private.
+ */
+export function appSharing(previous, env = process.env) {
+  if (env.PRISMEAI_SHARING) {
+    if (!SHARINGS.includes(env.PRISMEAI_SHARING)) throw new Error(`PRISMEAI_SHARING must be one of ${SHARINGS.join(', ')}`)
+    return env.PRISMEAI_SHARING
+  }
+  if (env.PRISMEAI_PUBLIC === 'true') return 'public'
+  if (env.PRISMEAI_PUBLIC === 'false') return 'private'
+  if (SHARINGS.includes(previous?.sharing)) return previous.sharing
+  if (previous?.public === true) return 'public'
+  return 'private'
+}
 
 export function toViewName(fileBase) {
   return fileBase
@@ -106,8 +126,8 @@ export function cssModule(css) {
  * the previous one, so what is set elsewhere (metadata for link previews,
  * displayMode…) survives; `embed` goes, an isolated app has none.
  */
-export function isolatedEntry(previous, { views, manifest, version, name, isPublic, mcp, agent }) {
-  const { embed: _embed, ...kept } = previous ?? {}
+export function isolatedEntry(previous, { views, manifest, version, name, sharing, mcp, agent }) {
+  const { embed: _embed, public: _public, ...kept } = previous ?? {}
   return {
     ...kept,
     format: 'isolated',
@@ -117,7 +137,9 @@ export function isolatedEntry(previous, { views, manifest, version, name, isPubl
     version,
     name,
     builtAt: manifest.builtAt,
-    public: isPublic,
+    sharing,
+    // Read by the serving of older platform versions.
+    displayMode: sharing === 'public' ? 'standalone' : 'platform',
     ...(mcp && { mcp }),
     ...(agent !== undefined && (agent ? { agent } : { agent: undefined })),
   }

@@ -134,7 +134,7 @@ export function ToolStep({ app }: { app: McpApp }) {
       n={4}
       done={!!message}
       title="Use a tool your agent also has"
-      why="The workspace exposes tools as an MCP server, guarded like every webhook. The app calls them with your session; an agent given the same server calls them with an org API key in its headers."
+      why="The workspace exposes tools as an MCP server, guarded like every webhook. The app calls them with your session, and an agent given the same server calls them as the user who talks to it."
       files="Automation mcp (tools/list, tools/call), tool hello, guarded by _auth. Code: app.callServerTool."
       snippet={"const result = await app.callServerTool('hello', { name: 'World' })"}
     >

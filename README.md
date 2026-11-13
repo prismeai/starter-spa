@@ -191,9 +191,11 @@ app.events.on('agent.action', (event) => {
 Add the app's MCP server to the agent (Agent Factory → the agent → MCP servers):
 
 - URL: `<PRISMEAI_API_URL>/workspaces/<workspace id>/webhooks/mcp`
-- Header: `x-prismeai-api-key: <org API key>` (`mcp` refuses anonymous callers)
+- No header: the platform calls a server it hosts **as the user who talks to the agent**, so `_auth` sees that user (`auth_type: user`) and the tool runs with their rights.
 
-The app calls `hello` with `app.callServerTool`, the agent calls the same tool in the conversation, and the result shows as the `hello-card` view (next section). One backend, two ways in.
+The app calls `hello` with `app.callServerTool`, the agent calls the same tool in the conversation, and the result shows as the `hello-card` view (next section). One backend, two ways in, the same user and the same rights.
+
+An org API key (`x-prismeai-api-key` header) is only for a caller without a user: a scheduled automation, a system outside the platform. The tool then sees the key, not a person.
 
 ### Try it in the starter
 
@@ -212,12 +214,12 @@ Locally, `npm run dev` simulates the agent: `open()` sends an `agent.action` aft
 When an agent calls the `hello` tool, the chat shows `src/views/HelloCard.tsx` under the tool call: the greeting, a button that calls `hello` again from the view, and one that proposes a message to the user.
 
 1. **The view**: a file in `src/views/` (`HelloCard.tsx` → view `hello-card`), a component that receives `{ app }`. `useToolInput(app)` and `useToolResult(app)` (from `@prisme.ai/mcp-apps/react`) give the tool call it shows.
-2. **The build**: `npm run build` makes `dist/hello-card.<hash>.js`; `npm run deploy` writes its URL in `bundles[<slug>].views["hello-card"]`.
+2. **The build**: `npm run build` makes `dist/hello-card.<hash>.js`; `npm run deploy` uploads it as a workspace asset with the app's sharing and writes its path in `bundles[<slug>].views["hello-card"]`.
 3. **The tool**: in `automations/mcp.yml`, `tools/list` declares `hello` with `_meta.ui.resourceUri: ui://app/hello-card`.
-4. **The page**: `mcp` answers `resources/read` for `ui://app/hello-card` with an HTML page that loads the view's bundle, and lists the origin of that file in `_meta.ui.csp.resourceDomains` (the chat frames the view under this CSP).
+4. **The page**: `mcp` answers `resources/read` for `ui://app/hello-card` with an HTML page that **holds** the view's code. It reads the bundle itself, as the user who asks: a private app's view stays private, and a user who cannot open the app gets no view (`View not available to this user`). The chat's frame runs without the user's session, so it could not download a private file on its own; with the code inline, it has nothing to download.
 5. **The agent**: give an agent the app's MCP server ([Share your tools with it](#share-your-tools-with-it)) and ask it to say hello to someone.
 
-The view's actions go through the agent: `app.callServerTool` runs with the agent's tool permissions and approvals, `app.sendMessage` asks the user before filling the composer. A view has no `app.webhooks` and no workspace events in the chat.
+The view's actions go through the agent: `app.callServerTool` runs with the agent's tool permissions and approvals, `app.sendMessage` asks the user before filling the composer. A view has no `app.webhooks` and no workspace events in the chat. The model never sees the view's code: it gets the tool's result, the chat reads the view apart.
 
 Locally, `npm run dev` opens a view with `?view=<name>` (`http://localhost:5173/?view=hello-card`), as if the tool had just shown it.
 
@@ -261,8 +263,8 @@ anonymous callers with `401`. It recognises three caller types:
 `app.webhooks.call()` and `app.callServerTool()` go through the page, which adds the
 signed-in user's session: a logged-in user sails through, an anonymous caller is
 rejected. The app never holds a token. An **agent** given the `mcp` server calls it
-server to server: set an org API key in the server's headers (`x-prismeai-api-key`)
-so it passes as `apikey`.
+as the user who talks to it: the platform carries that user's identity to the
+servers it hosts, so `_auth` resolves them as `user` too.
 
 ### Choosing an auth strategy
 
@@ -348,7 +350,7 @@ actually have resources to protect — a status endpoint does not need it.
 
 ### Leaving an endpoint public on purpose
 
-Public-facing apps (`PRISMEAI_PUBLIC=true`, `user` is `null`) legitimately need open
+Public-facing apps (`PRISMEAI_SHARING=public`, `user` is `null`) legitimately need open
 endpoints. Opt in explicitly per endpoint — the default stays closed:
 
 ```yaml
@@ -424,9 +426,9 @@ npm run release       # npm run build && npm run deploy
 | 0 | **Conflict detection** | Refuses if the workspace changed since your last pull (`.prismeai/last-pull.json`). No state change. | `--force`, `PRISMEAI_FORCE=true` |
 | 1 | **Automations sync** | Upserts `automations/**/*.yml`; deletes remote automations not present locally. | `PRISMEAI_SKIP_AUTOMATIONS_SYNC=true` |
 | 2 | **Source files sync** | Uploads `src/`, `prisme.app.json` and the root configs as `metadata.type=source` files (SHA-256 diff), so the Builder opens the same code. | `PRISMEAI_SKIP_SOURCE_SYNC=true` |
-| 3 | **View bundles upload** | Uploads each `dist/<view>.<hash>.js` as a public file. | — |
-| 4 | **Patch workspace config** | Merges into `config.value.bundles[<slug>]`: `format: 'isolated'`, `bundle` (the `app` view), `views`, `manifest`, `version`, `name`, `builtAt`, `public`, and `mcp` / `agent` when set. Keeps the other keys (`metadata`…), drops `embed`. **The live pointer.** | — |
-| 5 | **Cleanup** | Deletes public bundle files (`bundle.js`, `embed.js`, `<view>.<hash>.js`) no app of the workspace points at. | `PRISMEAI_SKIP_BUNDLE_CLEANUP=true` |
+| 3 | **View bundles upload** | Uploads each `dist/<view>.<hash>.js` as a workspace asset, `dist/app/isolated/<view>.<hash>.js`, with the app's sharing (`PRISMEAI_SHARING`). | — |
+| 4 | **Patch workspace config** | Merges into `config.value.bundles[<slug>]`: `format: 'isolated'`, `bundle` (the `app` view) and `views` as relative asset paths, `manifest`, `version`, `name`, `builtAt`, `sharing`, and `mcp` / `agent` when set. Keeps the other keys (`metadata`…), drops `embed` and the legacy `public`. **The live pointer.** | — |
+| 5 | **Cleanup** | Deletes the views of earlier deploys (`dist/app/isolated/`) and the public bundle files of older deploys (`bundle.js`, `embed.js`, `<view>.<hash>.js`) no app of the workspace points at. | `PRISMEAI_SKIP_BUNDLE_CLEANUP=true` |
 | 6 | **Smoke test** | Resolves `/pages/<slug>/_bundle`, checks the entry is isolated, fetches and parses each view. | `PRISMEAI_SKIP_SMOKE=true` |
 | 7 | **Version snapshot** | `POST /workspaces/:id/versions`. | `PRISMEAI_SKIP_VERSION_SNAPSHOT=true` |
 
@@ -458,7 +460,7 @@ All `.env*` files except `.env.example` are gitignored.
 | `PRISMEAI_WORKSPACE_ID` | yes | Short ID of the target workspace (e.g. `B4eoHS6`) |
 | `PRISMEAI_APP_AGENT` | no | Agent whose chat the app opens (`app.agent`). Unset keeps the current one; empty removes it. |
 | `PRISMEAI_MCP_WEBHOOK` | no | Webhook of the MCP endpoint the views call (default `mcp`) |
-| `PRISMEAI_PUBLIC` | no | `true`: open without sign-in (`app.user` absent). `false` forces sign-in; unset keeps the current setting. |
+| `PRISMEAI_SHARING` | no | Who opens the app, and reads its views: `private` (workspace members and the organizations / groups it is shared with), `authenticated` (any signed-in user), `public` (anyone, `app.user` absent). Unset keeps the current setting; a first deploy is `private`. `PRISMEAI_PUBLIC=true` still means `public`. |
 | `PRISMEAI_PLATFORM_URL` | no | Your platform's UI URL, for `npm run sync-kit` and `npm run check` |
 | `PRISMEAI_BUNDLE_SLUG` | no | Override the `bundles[<key>]` (default: workspace slug) |
 | `PRISMEAI_APP_VERSION` | no | Version label (default `1.0.0`) |
@@ -477,7 +479,7 @@ The app is served at **both** URLs, always:
 - **`/apps/<slug>`**: in the platform shell (sidebar, top bar);
 - **`/p/<slug>`**: standalone, full viewport. A route of the app shows as `/p/<slug>#/<route>`.
 
-With **`PRISMEAI_PUBLIC=true`** the app opens without sign-in: `app.user` is absent, and every webhook it calls reaches `_auth` as an anonymous caller (`401`). Add `allow_public: true` to the `_auth` call of the endpoints such an app may call without sign-in; keep the others closed. The example's home page asks visitors to sign in before trying a step.
+With **`PRISMEAI_SHARING=public`** the app opens without sign-in: `app.user` is absent, and every webhook it calls reaches `_auth` as an anonymous caller (`401`). Add `allow_public: true` to the `_auth` call of the endpoints such an app may call without sign-in; keep the others closed. The example's home page asks visitors to sign in before trying a step.
 
 ---
 
@@ -601,7 +603,7 @@ cmdkey /generic:prismeai-sandbox /user:%USERNAME% /pass
 | Deploy refused: `bundles[<slug>] is an app in the shared format` | The workspace holds an app built before isolated apps | Deploy to another `PRISMEAI_BUNDLE_SLUG` or workspace, `PRISMEAI_ALLOW_FORMAT_SWITCH=true` to replace it, or use the `legacy-shared` branch |
 | Build: `@prisme.ai/sdk is a platform module` | An import of the platform SDK | Use the `app` object (`app.webhooks`, `app.callServerTool`…) |
 | Build: `The kit is missing` | `vendor/` was deleted | `git checkout vendor` or `npm run sync-kit` |
-| A webhook or tool answers 401 | `_auth` rejected the caller: anonymous visitor, or an agent without credential | Signed-in app: check the user is signed in. Agent: set an org API key in its MCP server headers. Public endpoint: `allow_public: true` |
+| A webhook or tool answers 401 | `_auth` rejected the caller: an anonymous visitor, or a caller without user (a scheduled automation, an external system) | Signed-in app or agent: check the user is signed in. Caller without user: an org API key header. Public endpoint: `allow_public: true` |
 | Webhook returns 404 | The path differs from the automation's `endpoint` | Use the `endpoint` of the YAML in `app.webhooks.call(...)` |
 | `npm run dev:live` fails at start | Missing `.env` values | Set `PRISMEAI_API_URL`, `PRISMEAI_WORKSPACE_ID` and a token |
 | `npm run deploy` → `404 /v2/v2/...` | `/v2` missing or doubled in `PRISMEAI_API_URL` | One `/v2`, no trailing slash |
@@ -609,7 +611,8 @@ cmdkey /generic:prismeai-sandbox /user:%USERNAME% /pass
 | A dialog loses its styles | Rendered outside the app | `container={app.portalContainer}` on its portal |
 | Deploy fails with 401 | Token expired or wrong | Mint a new one in **Settings → Access Tokens** |
 | Deploy refused after a teammate edited in the Builder | Conflict detection | `npm run pull`, review with `git diff`, then `npm run release` |
-| Your agent does not see the app's tools | The agent calls `mcp` without credential | Add the workspace's `mcp` webhook to the agent with an org API key header |
+| Your agent does not see the app's tools | Wrong MCP server URL (a stray character is enough: the platform answers `Workspace not found` or no automation matches) | `<PRISMEAI_API_URL>/workspaces/<workspace id>/webhooks/mcp`, nothing after `mcp` |
+| The card says `View not available to this user` | The user who talks to the agent cannot open the app (its sharing) | Share the app with them (`PRISMEAI_SHARING`, or its organizations / groups in the Builder) |
 
 ---
 

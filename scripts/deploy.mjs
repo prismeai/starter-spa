@@ -23,6 +23,7 @@
  *   PRISMEAI_APP_VERSION           default '1.0.0'
  *   PRISMEAI_APP_AGENT             agent whose chat the app opens (app.agent); empty removes it
  *   PRISMEAI_MCP_WEBHOOK           webhook of the MCP endpoint the views call (default 'mcp')
+ *   PRISMEAI_SHARING               who opens the app: private | authenticated | public (default: kept, else private)
  *   PRISMEAI_ALLOW_FORMAT_SWITCH   'true' to replace an app deployed in the shared format
  *   PRISMEAI_SKIP_*                see README
  */
@@ -35,7 +36,7 @@ import { execSync } from 'node:child_process'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import yaml from 'js-yaml'
-import { VIEW_FILE, isolatedEntry, referencedFiles } from './lib/isolated.mjs'
+import { ISOLATED_FOLDER, VIEW_FILE, appSharing, isolatedEntry, referencedFiles } from './lib/isolated.mjs'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const ROOT = path.resolve(__dirname, '..')
@@ -489,48 +490,46 @@ async function uploadSourceFile(relPath, content, hash) {
 // ---------------------------------------------------------------------------
 // 3. Upload the view bundles (parity with useAppBuild buildIsolated)
 //
-// Each file name carries the hash of its content (`app.<hash>.js`): a new
-// build gets new URLs, so no cache ever serves an old view.
+// Workspace assets under dist/app/isolated/, with the app's sharing: a private
+// app's views are private. Each name carries the hash of its content
+// (`app.<hash>.js`): a new build gets new paths, no cache serves an old view.
 // ---------------------------------------------------------------------------
 
-async function uploadViews() {
+async function uploadViews({ sharing }) {
   const raw = await readFile(path.join(DIST, 'manifest.json'), 'utf8').catch(() =>
     fail('dist/manifest.json not found: run `npm run build` first.')
   )
   const { manifest, views } = JSON.parse(raw)
-  console.log(`→ Uploading ${views.length} view bundle${views.length > 1 ? 's' : ''}`)
-  const urls = {}
+  console.log(`→ Uploading ${views.length} view bundle${views.length > 1 ? 's' : ''} (sharing: ${sharing})`)
+  const paths = {}
   for (const view of views) {
+    const assetPath = `${ISOLATED_FOLDER}/${view.fileName}`
     const code = await readFile(path.join(DIST, view.fileName))
     const fd = new FormData()
     fd.append('file', new Blob([code], { type: 'application/javascript' }), view.fileName)
-    fd.append('public', 'true')
-    const res = await api('POST', `/workspaces/${PRISMEAI_WORKSPACE_ID}/files`, { body: fd })
-    if (!Array.isArray(res) || !res[0]?.url) {
-      fail(`Upload of the "${view.name}" view returned no URL. Check that the token has write access to the workspace.`)
+    fd.append('path', assetPath)
+    fd.append('sharing', sharing)
+    const res = await api('POST', `/workspaces/${PRISMEAI_WORKSPACE_ID}/assets`, { body: fd })
+    if (!Array.isArray(res) || res[0]?.path !== assetPath) {
+      fail(`Upload of the "${view.name}" view failed. Check that the token has write access to the workspace (and that the platform serves workspace assets).`)
     }
-    urls[view.name] = res[0].url
-    console.log(`✓ ${view.name}: ${res[0].url}`)
+    // Relative: the platform resolves it against the API of the environment.
+    paths[view.name] = `assets/${assetPath}`
+    console.log(`✓ ${view.name}: assets/${assetPath}`)
   }
-  return { views: urls, manifest }
+  return { views: paths, manifest }
 }
 
 // ---------------------------------------------------------------------------
 // 4. Patch workspace config (the live pointer)
 // ---------------------------------------------------------------------------
 
-async function patchWorkspaceConfig({ views, manifest, ws, slug }) {
+async function patchWorkspaceConfig({ views, manifest, ws, slug, sharing }) {
   console.log(`→ Patching config.value.bundles[${slug}]`)
   const existing = ws?.config?.value || {}
   const existingBundles = existing.bundles || {}
   const previous = existingBundles[slug]
-
-  // Public access: the app is served at /apps/:slug (Platform Shell) and
-  // /p/:slug (standalone); `public` decides login. Unset, PRISMEAI_PUBLIC keeps
-  // what the entry already says (set from the Builder or the API).
-  const publicEnv = process.env.PRISMEAI_PUBLIC
-  const isPublic = publicEnv ? publicEnv === 'true' : previous?.public === true
-  console.log(`  public=${isPublic}${PRISMEAI_APP_AGENT ? ` agent=${PRISMEAI_APP_AGENT}` : ''}`)
+  console.log(`  sharing=${sharing}${PRISMEAI_APP_AGENT ? ` agent=${PRISMEAI_APP_AGENT}` : ''}`)
 
   await api('PATCH', `/workspaces/${PRISMEAI_WORKSPACE_ID}`, {
     body: {
@@ -546,7 +545,7 @@ async function patchWorkspaceConfig({ views, manifest, ws, slug }) {
               manifest,
               version: PRISMEAI_APP_VERSION,
               name: ws?.name || slug,
-              isPublic,
+              sharing,
               mcp: PRISMEAI_MCP_WEBHOOK,
               agent: PRISMEAI_APP_AGENT,
             }),
@@ -598,6 +597,16 @@ async function cleanupOrphanBundles() {
     await api('DELETE', `/workspaces/${PRISMEAI_WORKSPACE_ID}/files/${encodeURIComponent(f.id)}`)
     deleted++
   }
+  // Views of earlier deploys, as workspace assets (dist/app/isolated/).
+  const assets = await api('GET', `/workspaces/${PRISMEAI_WORKSPACE_ID}/assets?prefix=${encodeURIComponent(ISOLATED_FOLDER + '/')}`)
+  for (const asset of Array.isArray(assets) ? assets : []) {
+    if (referenced.has(`assets/${asset.path}`)) {
+      kept++
+      continue
+    }
+    await api('DELETE', `/workspaces/${PRISMEAI_WORKSPACE_ID}/assets/${asset.path.split('/').map(encodeURIComponent).join('/')}`)
+    deleted++
+  }
   console.log(`  kept=${kept} deleted=${deleted}`)
 }
 
@@ -619,8 +628,11 @@ async function smokeTest({ slug }) {
   const entry = resolved?.bundles?.[slug]
   if (!entry?.bundle) fail(`Smoke: /pages/${slug}/_bundle has no bundles[${slug}].bundle`)
   if (entry.format !== 'isolated') fail(`Smoke: bundles[${slug}] is not isolated (format: ${entry.format ?? 'shared'})`)
-  for (const [name, url] of Object.entries(entry.views ?? { app: entry.bundle })) {
-    const res = await fetch(url)
+  for (const [name, ref] of Object.entries(entry.views ?? { app: entry.bundle })) {
+    // A relative asset path, as the platform resolves it; with the token, as a
+    // private app's view needs a session.
+    const url = /^https?:\/\//.test(ref) ? ref : `${API_BASE}/workspaces/${encodeURIComponent(slug)}/${ref}`
+    const res = await fetch(url, { headers: AUTH_HEADERS })
     if (!res.ok) fail(`Smoke: view "${name}" returned ${res.status} ${res.statusText}`)
     const code = await res.text()
     if (!code) fail(`Smoke: view "${name}" is empty`)
@@ -777,12 +789,13 @@ try {
   await syncAutomations();             mark('automations', SKIP_AUTOMATIONS_SYNC ? 'skipped' : 'done')
   await syncSourceFiles();             mark('source', SKIP_SOURCE_SYNC ? 'skipped' : 'done')
 
-  const { views, manifest } = await uploadViews();  mark('bundle', 'done')
-
   const ws = await api('GET', `/workspaces/${PRISMEAI_WORKSPACE_ID}`)
   slug = process.env.PRISMEAI_BUNDLE_SLUG || ws?.slug || PRISMEAI_WORKSPACE_ID
+  const sharing = appSharing(ws?.config?.value?.bundles?.[slug])
+  const { views, manifest } = await uploadViews({ sharing });  mark('bundle', 'done')
 
-  await patchWorkspaceConfig({ views, manifest, ws, slug });  mark('config', 'done')
+
+  await patchWorkspaceConfig({ views, manifest, ws, slug, sharing });  mark('config', 'done')
   await cleanupOrphanBundles();        mark('cleanup', SKIP_BUNDLE_CLEANUP ? 'skipped' : 'done')
   await smokeTest({ slug });           mark('smoke', SKIP_SMOKE ? 'skipped' : 'done')
   await versionSnapshot();             mark('version', SKIP_VERSION_SNAPSHOT ? 'skipped' : 'done')
