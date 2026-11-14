@@ -266,6 +266,10 @@ rejected. The app never holds a token. An **agent** given the `mcp` server calls
 as the user who talks to it: the platform carries that user's identity to the
 servers it hosts, so `_auth` resolves them as `user` too.
 
+### Every tool checks what the caller may do
+
+`_auth` tells **who** calls; it does not decide **what** they may do. Every tool of `mcp`, like every webhook, must check the caller's rights (`auth.user_id`, their organization, their role, `auth.user_permissions`) on the data it reads or changes, and refuse otherwise. The view, the app's page and the agent are only ways in: whoever can reach the tool, from the chat, a view or a direct call to the webhook, gets exactly what the tool lets them have. The app's sharing does not protect a tool, it only decides who opens the page and sees the views.
+
 ### Choosing an auth strategy
 
 `_auth` is a deliberately thin "is this caller authenticated?" gate. It is **not**

@@ -61,6 +61,8 @@ The app is in the **isolated** format: `npm run build` makes one self-contained 
 
 9. **Keep the kit in `vendor/`.** Update it with `npm run sync-kit` only, never by hand; it is copied into every bundle. Don't add `@prisme.ai/mcp-apps` to package.json.
 
+10. **Every tool checks the caller's rights on its data.** `_auth` only says who calls. A tool of `mcp` (or a webhook) that reads or changes data checks, from `auth`, that this caller may, and refuses otherwise. Never rely on the app's sharing, the view or the agent to protect it: any of them can be bypassed by calling the webhook.
+
 ---
 
 ## Common tasks
