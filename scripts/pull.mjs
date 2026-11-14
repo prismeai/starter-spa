@@ -29,6 +29,7 @@ import { createHash } from 'node:crypto'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import yaml from 'js-yaml'
+import { SOURCES_FOLDER, assetVersion, fromSourceAssetPath } from './lib/isolated.mjs'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const ROOT = path.resolve(__dirname, '..')
@@ -130,14 +131,15 @@ async function ensureDir(filePath) {
 
 console.log(`Pulling from ${API_BASE}, workspace=${PRISMEAI_WORKSPACE_ID}`)
 
-// Manifest format: server-side hashes only. The deploy script compares these
-// against the workspace's CURRENT `metadata.hash` (source files) and
-// `checksum` (automations) to detect remote edits since the last pull.
+// Manifest: the deploy compares the workspace's CURRENT source asset versions
+// (updatedAt:size) and automation `checksum` against these to detect remote
+// edits since the last pull; `sourceHashes` lets it upload only what changed.
 const manifest = {
   pulledAt: new Date().toISOString(),
   workspaceId: PRISMEAI_WORKSPACE_ID,
   automations: {},   // slug → server checksum
-  sourceFiles: {},   // path → server metadata.hash
+  sourceFiles: {},   // path → source asset version
+  sourceHashes: {},  // path → sha256 of the content pulled
 }
 
 // ---------------------------------------------------------------------------
@@ -189,28 +191,33 @@ if (!SKIP_AUTOMATIONS) {
 }
 
 // ---------------------------------------------------------------------------
-// 2. Pull source files (metadata.type=source)
+// 2. Pull sources: workspace assets under src/, where the Builder keeps them.
+//    A workspace not migrated yet keeps them as files (metadata.type=source).
 // ---------------------------------------------------------------------------
 
 if (!SKIP_SOURCE) {
-  console.log(`→ Fetching source files`)
-  const params = new URLSearchParams({ limit: '1000', 'metadata.type': 'source' })
-  const list = await api('GET', `/workspaces/${PRISMEAI_WORKSPACE_ID}/files?${params}`)
-  const files = Array.isArray(list) ? list : list?.result || []
+  console.log(`→ Fetching sources`)
+  const assets = await api('GET', `/workspaces/${PRISMEAI_WORKSPACE_ID}/assets?prefix=${encodeURIComponent(SOURCES_FOLDER + '/')}`)
+  let sources = (Array.isArray(assets) ? assets : []).map((a) => ({ rel: fromSourceAssetPath(a.path), url: a.url, version: assetVersion(a) }))
+  if (sources.length === 0) {
+    const params = new URLSearchParams({ limit: '1000', 'metadata.type': 'source' })
+    const list = await api('GET', `/workspaces/${PRISMEAI_WORKSPACE_ID}/files?${params}`)
+    const files = Array.isArray(list) ? list : list?.result || []
+    sources = files.map((f) => ({ rel: f.metadata?.path || f.name, url: f.url })).filter((f) => f.rel)
+    if (sources.length) console.log('  (sources still as files: the next deploy writes them as assets)')
+  }
 
-  if (files.length === 0) {
+  if (sources.length === 0) {
     console.log('  (none)')
   } else {
-    for (const f of files) {
-      const relPath = f.metadata?.path || f.name
-      if (!relPath) continue
-      const content = await fetchText(f.url)
-      const abs = path.join(ROOT, relPath)
+    for (const source of sources) {
+      const content = await fetchText(source.url)
+      const abs = path.join(ROOT, source.rel)
       await ensureDir(abs)
       await writeFile(abs, content, 'utf8')
-      // Server's metadata.hash — set by deploy on upload, refreshed on Builder save
-      manifest.sourceFiles[relPath] = f.metadata?.hash
-      console.log(`  ← ${relPath}`)
+      if (source.version) manifest.sourceFiles[source.rel] = source.version
+      manifest.sourceHashes[source.rel] = sha256(content)
+      console.log(`  ← ${source.rel}`)
     }
   }
 } else {

@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { VIEW_FILE, appSharing, bootEntrySource, cssModule, findEntries, isolatedEntry, referencedFiles, shadowCompatibleCss, toViewName } from './isolated.mjs'
+import { VIEW_FILE, appSharing, assetVersion, bootEntrySource, diffSources, fromSourceAssetPath, toSourceAssetPath, cssModule, findEntries, isolatedEntry, referencedFiles, shadowCompatibleCss, toViewName } from './isolated.mjs'
 
 test('views: the full app first, then src/views in file order, by kebab-case name', () => {
   const entries = findEntries(['src/views/TicketCard.tsx', 'src/App.tsx', 'src/pages/Home.tsx', 'src/views/sales_chart.ts'])
@@ -74,4 +74,15 @@ test('sharing: the variable, else the legacy public flag, else what is deployed,
 test('cleanup: assets paths count as referenced', () => {
   const urls = referencedFiles({ a: { bundle: 'assets/dist/app/isolated/app.0123456789abcdef.js', views: { 'hello-card': 'assets/dist/app/isolated/hello-card.0123456789abcdef.js' } } })
   assert.ok(urls.has('assets/dist/app/isolated/hello-card.0123456789abcdef.js'))
+})
+
+test('sources: as the Builder keeps them, under src/; only what changed is uploaded', () => {
+  assert.equal(toSourceAssetPath('src/App.tsx'), 'src/src/App.tsx')
+  assert.equal(fromSourceAssetPath('src/prisme.app.json'), 'prisme.app.json')
+  assert.equal(assetVersion({ updatedAt: '2026-11-14T10:00:00.000Z', size: 27 }), '2026-11-14T10:00:00.000Z:27')
+  const local = [{ rel: 'a', hash: '1' }, { rel: 'b', hash: '2' }, { rel: 'c', hash: '3' }]
+  const { toUpload, toDelete } = diffSources(local, { a: '1', b: 'old' }, new Set(['a', 'b', 'gone']))
+  assert.deepEqual(toUpload.map((f) => f.rel), ['b', 'c'])
+  assert.deepEqual(toDelete, ['gone'])
+  assert.deepEqual(diffSources(local, undefined, new Set(['a'])).toUpload.map((f) => f.rel), ['a', 'b', 'c'])
 })

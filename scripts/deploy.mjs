@@ -6,8 +6,9 @@
  *
  *   0. Format guard: refuses to replace an app deployed in the shared format.
  *   1. Sync automations/*.yml into the workspace.
- *   2. Sync src/* (and prisme.app.json) as `metadata.type=source` files, so the
- *      Builder opens the same code your repo holds.
+ *   2. Sync src/* (and prisme.app.json, the root configs) as workspace assets
+ *      under src/, where the Builder keeps an app's sources: it opens the same
+ *      code your repo holds.
  *   3. Upload each view bundle of dist/ as a public file.
  *   4. PATCH workspace.config.value.bundles[<slug>]: format 'isolated', the
  *      views, the manifest, the MCP endpoint and the agent of the app.
@@ -36,7 +37,7 @@ import { execSync } from 'node:child_process'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import yaml from 'js-yaml'
-import { ISOLATED_FOLDER, VIEW_FILE, appSharing, isolatedEntry, referencedFiles } from './lib/isolated.mjs'
+import { ISOLATED_FOLDER, VIEW_FILE, appSharing, assetVersion, diffSources, fromSourceAssetPath, isolatedEntry, referencedFiles, toSourceAssetPath, SOURCES_FOLDER } from './lib/isolated.mjs'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const ROOT = path.resolve(__dirname, '..')
@@ -232,7 +233,7 @@ async function collectSourceFiles() {
 // Pre-flight: conflict detection vs .prismeai/last-pull.json
 //
 // Refuses to deploy if remote source files / automations changed since the
-// last `npm run pull`. Compares server-side hashes (file metadata.hash and
+// last `npm run pull`. Compares server-side versions (source asset updatedAt:size and
 // automation checksum) against the manifest. Bypassed with --force or
 // PRISMEAI_FORCE=true. Skipped silently when no manifest exists (first-time
 // deploy from a clean clone).
@@ -276,20 +277,15 @@ async function detectConflicts() {
     }
   }
 
-  // Source files: compare server's metadata.hash against manifest
-  const params = new URLSearchParams({ limit: '1000', 'metadata.type': 'source' })
-  const list = await api('GET', `/workspaces/${PRISMEAI_WORKSPACE_ID}/files?${params}`)
-  const files = Array.isArray(list) ? list : list?.result || []
+  // Sources: the version of each source asset (src/…) against the manifest
+  const assets = await listSourceAssets()
   const manifestSourcePaths = new Set(Object.keys(manifest.sourceFiles || {}))
-
-  for (const f of files) {
-    const relPath = f.metadata?.path || f.name
-    if (!relPath) continue
-    const remoteHash = f.metadata?.hash
-    const manifestHash = manifest.sourceFiles?.[relPath]
+  for (const asset of assets) {
+    const relPath = fromSourceAssetPath(asset.path)
+    const known = manifest.sourceFiles?.[relPath]
     if (!manifestSourcePaths.has(relPath)) {
       conflicts.push(`+ ${relPath} — added remotely since last pull`)
-    } else if (remoteHash && manifestHash && remoteHash !== manifestHash) {
+    } else if (known && known !== assetVersion(asset)) {
       conflicts.push(`~ ${relPath} — modified remotely since last pull`)
     }
   }
@@ -410,81 +406,49 @@ async function syncAutomations() {
 // 1. Sync source files (parity with syncFilesToWorkspace)
 // ---------------------------------------------------------------------------
 
+/** Sources the workspace holds, as the Builder keeps them: assets under src/. */
+async function listSourceAssets() {
+  const list = await api('GET', `/workspaces/${PRISMEAI_WORKSPACE_ID}/assets?prefix=${encodeURIComponent(SOURCES_FOLDER + '/')}`)
+  return Array.isArray(list) ? list : []
+}
+
+async function readManifest() {
+  return JSON.parse(await readFile(MANIFEST_PATH, 'utf8').catch(() => '{}'))
+}
+
 async function syncSourceFiles() {
   if (SKIP_SOURCE_SYNC) {
     console.log('· source sync skipped (PRISMEAI_SKIP_SOURCE_SYNC=true)')
-    return
+    return {}
   }
 
-  const localFiles = await collectSourceFiles()
-  console.log(`→ Syncing ${localFiles.length} source files`)
-
-  // List existing source files
-  const params = new URLSearchParams({ limit: '1000', 'metadata.type': 'source' })
-  const existing = await api('GET', `/workspaces/${PRISMEAI_WORKSPACE_ID}/files?${params}`)
-  const existingArr = Array.isArray(existing) ? existing : existing?.result || []
-
-  // Build path → { id, hash, duplicates[] } map
-  const byPath = new Map()
-  for (const f of existingArr) {
-    const p = f.metadata?.path || f.name
-    if (!p) continue
-    const cur = byPath.get(p)
-    if (cur) cur.duplicates.push(f.id)
-    else byPath.set(p, { id: f.id, hash: f.metadata?.hash, duplicates: [] })
-  }
-
-  let uploaded = 0, skipped = 0, deleted = 0
-
-  // Delete duplicates
-  for (const [, info] of byPath) {
-    for (const dupId of info.duplicates) {
-      await api('DELETE', `/workspaces/${PRISMEAI_WORKSPACE_ID}/files/${encodeURIComponent(dupId)}`)
-      deleted++
-    }
-  }
-
-  // Diff + upload
-  const localPaths = new Set()
-  for (const file of localFiles) {
-    localPaths.add(file.rel)
+  const files = await collectSourceFiles()
+  const local = []
+  for (const file of files) {
     const content = await readFile(file.abs, 'utf8')
-    const hash = sha256(content)
-    const cur = byPath.get(file.rel)
-
-    if (!cur) {
-      await uploadSourceFile(file.rel, content, hash)
-      uploaded++
-    } else if (cur.hash !== hash) {
-      await api('DELETE', `/workspaces/${PRISMEAI_WORKSPACE_ID}/files/${encodeURIComponent(cur.id)}`)
-      await uploadSourceFile(file.rel, content, hash)
-      uploaded++
-      deleted++
-    } else {
-      skipped++
-    }
+    local.push({ rel: file.rel, content, hash: sha256(content) })
   }
+  const remote = new Set((await listSourceAssets()).map((a) => fromSourceAssetPath(a.path)))
+  // Content hashes of the last sync (the server keeps none): what changed since.
+  const { sourceHashes } = await readManifest()
+  const { toUpload, toDelete } = diffSources(local, sourceHashes, remote)
+  console.log(`→ Syncing ${local.length} source files as assets (src/): ${toUpload.length} to upload, ${toDelete.length} to delete`)
 
-  // Delete files that no longer exist locally
-  for (const [p, info] of byPath) {
-    if (!localPaths.has(p)) {
-      await api('DELETE', `/workspaces/${PRISMEAI_WORKSPACE_ID}/files/${encodeURIComponent(info.id)}`)
-      deleted++
+  // A few files per request, like the Builder's batched save.
+  for (let i = 0; i < toUpload.length; i += 20) {
+    const fd = new FormData()
+    for (const f of toUpload.slice(i, i + 20)) {
+      const name = (f.rel.split('/').pop() || 'file').replace(/[;,\s]/g, '-')
+      fd.append('file', new Blob([f.content], { type: 'text/plain' }), name)
+      fd.append('path', toSourceAssetPath(f.rel))
     }
+    await api('POST', `/workspaces/${PRISMEAI_WORKSPACE_ID}/assets`, { body: fd })
   }
-
-  console.log(`  uploaded=${uploaded} skipped=${skipped} deleted=${deleted}`)
-}
-
-async function uploadSourceFile(relPath, content, hash) {
-  const formData = new FormData()
-  const filename = relPath.split('/').pop() || 'file'
-  formData.append('file', new Blob([content], { type: 'text/plain' }), filename)
-  formData.append('metadata.path', relPath)
-  formData.append('metadata.type', 'source')
-  formData.append('metadata.hash', hash)
-  formData.append('public', 'false')
-  return api('POST', `/workspaces/${PRISMEAI_WORKSPACE_ID}/files`, { body: formData })
+  for (const rel of toDelete) {
+    await api('DELETE', `/workspaces/${PRISMEAI_WORKSPACE_ID}/assets/${toSourceAssetPath(rel).split('/').map(encodeURIComponent).join('/')}`)
+  }
+  console.log(`  uploaded=${toUpload.length} skipped=${local.length - toUpload.length} deleted=${toDelete.length}`)
+  return Object.fromEntries(local.map((f) => [f.rel, f.hash]))
 }
 
 // ---------------------------------------------------------------------------
@@ -652,24 +616,23 @@ async function smokeTest({ slug }) {
 // Refresh .prismeai/last-pull.json after successful deploy so subsequent
 // deploys see "no remote changes" instead of falsely flagging our own pushes.
 // Without this, every deploy after the first one needs --force.
-async function refreshManifest() {
+async function refreshManifest(sourceHashes) {
   const ws = await api('GET', `/workspaces/${PRISMEAI_WORKSPACE_ID}`)
-  const params = new URLSearchParams({ limit: '1000', 'metadata.type': 'source' })
-  const list = await api('GET', `/workspaces/${PRISMEAI_WORKSPACE_ID}/files?${params}`)
-  const files = Array.isArray(list) ? list : list?.result || []
+  const assets = await listSourceAssets()
+  const previous = await readManifest()
   const manifest = {
     pulledAt: new Date().toISOString(),
     workspaceId: PRISMEAI_WORKSPACE_ID,
     automations: {},
+    // Version of each source asset (updatedAt:size): a later change is the Builder's.
     sourceFiles: {},
+    // Content hash of each source as last synced: the next deploy uploads only what changed.
+    sourceHashes: sourceHashes && Object.keys(sourceHashes).length ? sourceHashes : previous.sourceHashes || {},
   }
   for (const slug of Object.keys(ws?.automations || {})) {
     manifest.automations[slug] = ws.automations[slug]?.checksum
   }
-  for (const f of files) {
-    const p = f.metadata?.path || f.name
-    if (p) manifest.sourceFiles[p] = f.metadata?.hash
-  }
+  for (const asset of assets) manifest.sourceFiles[fromSourceAssetPath(asset.path)] = assetVersion(asset)
   await mkdir(path.dirname(MANIFEST_PATH), { recursive: true })
   await writeFile(MANIFEST_PATH, JSON.stringify(manifest, null, 2), 'utf8')
 }
@@ -787,7 +750,7 @@ let slug
 try {
   await detectConflicts();             mark('conflict', 'done')
   await syncAutomations();             mark('automations', SKIP_AUTOMATIONS_SYNC ? 'skipped' : 'done')
-  await syncSourceFiles();             mark('source', SKIP_SOURCE_SYNC ? 'skipped' : 'done')
+  const sourceHashes = await syncSourceFiles();  mark('source', SKIP_SOURCE_SYNC ? 'skipped' : 'done')
 
   const ws = await api('GET', `/workspaces/${PRISMEAI_WORKSPACE_ID}`)
   slug = process.env.PRISMEAI_BUNDLE_SLUG || ws?.slug || PRISMEAI_WORKSPACE_ID
@@ -799,7 +762,7 @@ try {
   await cleanupOrphanBundles();        mark('cleanup', SKIP_BUNDLE_CLEANUP ? 'skipped' : 'done')
   await smokeTest({ slug });           mark('smoke', SKIP_SMOKE ? 'skipped' : 'done')
   await versionSnapshot();             mark('version', SKIP_VERSION_SNAPSHOT ? 'skipped' : 'done')
-  await refreshManifest()  // refresh .prismeai/last-pull.json so subsequent deploys aren't blocked
+  await refreshManifest(sourceHashes)  // refresh .prismeai/last-pull.json so subsequent deploys aren't blocked
 
   console.log()
   console.log(`✓ Deploy complete. App is live at <your-platform>/apps/${slug} (and /p/${slug})`)

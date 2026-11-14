@@ -425,7 +425,7 @@ npm run release       # npm run build && npm run deploy
 | — | **Format guard** | Refuses if `bundles[<slug>]` is an app in the shared format: deploying would replace it and its sources. Read only. | `PRISMEAI_ALLOW_FORMAT_SWITCH=true` |
 | 0 | **Conflict detection** | Refuses if the workspace changed since your last pull (`.prismeai/last-pull.json`). No state change. | `--force`, `PRISMEAI_FORCE=true` |
 | 1 | **Automations sync** | Upserts `automations/**/*.yml`; deletes remote automations not present locally. | `PRISMEAI_SKIP_AUTOMATIONS_SYNC=true` |
-| 2 | **Source files sync** | Uploads `src/`, `prisme.app.json` and the root configs as `metadata.type=source` files (SHA-256 diff), so the Builder opens the same code. | `PRISMEAI_SKIP_SOURCE_SYNC=true` |
+| 2 | **Sources sync** | Uploads `src/`, `prisme.app.json` and the root configs as workspace assets under `src/` (private), where the Builder keeps an app's sources: it opens the same code. Only the files changed since the last sync are uploaded; files removed locally are deleted. | `PRISMEAI_SKIP_SOURCE_SYNC=true` |
 | 3 | **View bundles upload** | Uploads each `dist/<view>.<hash>.js` as a workspace asset, `dist/app/isolated/<view>.<hash>.js`, with the app's sharing (`PRISMEAI_SHARING`). | — |
 | 4 | **Patch workspace config** | Merges into `config.value.bundles[<slug>]`: `format: 'isolated'`, `bundle` (the `app` view) and `views` as relative asset paths, `manifest`, `version`, `name`, `builtAt`, `sharing`, and `mcp` / `agent` when set. Keeps the other keys (`metadata`…), drops `embed` and the legacy `public`. **The live pointer.** | — |
 | 5 | **Cleanup** | Deletes the views of earlier deploys (`dist/app/isolated/`) and the public bundle files of older deploys (`bundle.js`, `embed.js`, `<view>.<hash>.js`) no app of the workspace points at. | `PRISMEAI_SKIP_BUNDLE_CLEANUP=true` |
@@ -514,9 +514,9 @@ npm run pull
 Inverse of deploy. Fetches:
 
 - All workspace automations → written to `automations/<slug>.yml`
-- All `metadata.type=source` files → written to local at their `metadata.path`
+- The sources (workspace assets under `src/`, where the Builder keeps them) → written to local at their path. A workspace not migrated yet keeps them as files (`metadata.type=source`): they are read from there, and the next deploy writes them as assets.
 
-Use after a teammate edited automations or source files in the in-builder Builder, OR to bootstrap from an existing workspace. Writes a hash manifest to `.prismeai/last-pull.json` consumed by the deploy script's conflict detection.
+Use after a teammate edited automations or source files in the in-builder Builder, OR to bootstrap from an existing workspace. Writes a manifest to `.prismeai/last-pull.json` (the version of each automation and source, the hash of each source): the deploy's conflict detection compares the workspace against it, and uploads only the sources changed since.
 
 > ⚠ Pull **overwrites local files without confirmation**. Commit your local changes first; review with `git diff` after.
 

@@ -155,3 +155,27 @@ export function referencedFiles(bundles) {
   }
   return urls
 }
+
+/** The Builder keeps an app's sources as workspace assets under this folder. */
+export const SOURCES_FOLDER = 'src'
+export const toSourceAssetPath = (rel) => `${SOURCES_FOLDER}/${rel}`
+export const fromSourceAssetPath = (assetPath) =>
+  assetPath.startsWith(`${SOURCES_FOLDER}/`) ? assetPath.slice(SOURCES_FOLDER.length + 1) : assetPath
+
+/**
+ * Version of a source asset as the server lists it (no content hash on the
+ * server): it changes whenever the asset is written, by this repo or the Builder.
+ */
+export const assetVersion = (asset) => `${asset.updatedAt}:${asset.size}`
+
+/**
+ * What a deploy writes, against the content hashes it last synced: new and
+ * changed files uploaded, files gone locally deleted.
+ */
+export function diffSources(local, synced, remotePaths) {
+  const localPaths = new Set(local.map((f) => f.rel))
+  return {
+    toUpload: local.filter((f) => !remotePaths.has(f.rel) || synced?.[f.rel] !== f.hash),
+    toDelete: [...remotePaths].filter((rel) => !localPaths.has(rel)),
+  }
+}
