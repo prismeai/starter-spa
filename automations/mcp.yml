@@ -110,6 +110,11 @@ do:
             output: _view_code
         - conditions:
             '!{{_view_code}} or {{_view_code.error}}':
+              - comment: '403: the chat shows the tool''s text result instead of the view, with nothing to retry.'
+              - set:
+                  name: $http
+                  value:
+                    status: 403
               - set:
                   name: output
                   value:
