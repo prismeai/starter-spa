@@ -110,7 +110,7 @@ do:
             output: _view_code
         - conditions:
             '!{{_view_code}} or {{_view_code.error}}':
-              - comment: '403: the chat shows the tool''s text result instead of the view, with nothing to retry.'
+              - comment: '403 and reason auth: the chat shows the tool''s text result instead of the view, with nothing to retry.'
               - set:
                   name: $http
                   value:
@@ -123,6 +123,8 @@ do:
                     error:
                       code: -32002
                       message: View not available to this user
+                      data:
+                        reason: auth
               - break:
                   scope: automation
         - comment: 'The page holds the code: nothing for the frame to download, no domain to allow. An inline script decodes and runs it (the chat allows inline scripts, not eval).'
