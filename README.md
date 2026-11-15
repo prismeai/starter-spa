@@ -428,10 +428,12 @@ npm run release       # npm run build && npm run deploy
 |---|---|---|---|
 | — | **Format guard** | Refuses if `bundles[<slug>]` is an app in the shared format: deploying would replace it and its sources. Read only. | `PRISMEAI_ALLOW_FORMAT_SWITCH=true` |
 | 0 | **Conflict detection** | Refuses if the workspace changed since your last pull (`.prismeai/last-pull.json`). No state change. | `--force`, `PRISMEAI_FORCE=true` |
-| 1 | **Automations sync** | Upserts `automations/**/*.yml`; deletes remote automations not present locally. | `PRISMEAI_SKIP_AUTOMATIONS_SYNC=true` |
+| 1 | **Automations** | Each POST/PATCH/DELETE of an automation makes the runtime rebuild the whole workspace model, so the deploy writes as few as it can. With the DSUL import on (step 4b), it writes none here: the import creates and updates them in one rebuild. Without it, it POSTs the new ones and PATCHes only those changed since the last deploy. `npm run deploy -- --plan` prints these calls and writes nothing. | `PRISMEAI_SKIP_AUTOMATIONS_SYNC=true` |
 | 2 | **Sources sync** | Uploads `src/`, `prisme.app.json` and the root configs as workspace assets under `src/` (private), where the Builder keeps an app's sources: it opens the same code. Only the files changed since the last sync are uploaded; files removed locally are deleted. | `PRISMEAI_SKIP_SOURCE_SYNC=true` |
 | 3 | **View bundles upload** | Uploads each `dist/<view>.<hash>.js` as a workspace asset, `dist/app/isolated/<view>.<hash>.js`, with the app's sharing (`PRISMEAI_SHARING`). | — |
 | 4 | **Patch workspace config** | Merges into `config.value.bundles[<slug>]`: `format: 'isolated'`, `bundle` (the `app` view) and `views` as relative asset paths, `manifest`, `version`, `name`, `builtAt`, `sharing`, and `mcp` / `agent` when set. Keeps the other keys (`metadata`…), drops `embed` and the legacy `public`. **The live pointer.** | — |
+| 4b | **DSUL import** | Only when the repo has an `index.yml`: zips `index.yml`, `security.yml`, `imports/` and `automations/` and `POST /workspaces/:id/import` (never with `?prune=true`, which would also delete the sources and bundles uploaded above). | `PRISMEAI_SKIP_DSUL_IMPORT=true` |
+| 4c | **Removed automations** | With the DSUL import on, deletes after it the automations the workspace holds and the repo no longer has. | `PRISMEAI_SKIP_AUTOMATIONS_SYNC=true` |
 | 5 | **Cleanup** | Deletes the views of earlier deploys (`dist/app/isolated/`) and the public bundle files of older deploys (`bundle.js`, `embed.js`, `<view>.<hash>.js`) no app of the workspace points at. | `PRISMEAI_SKIP_BUNDLE_CLEANUP=true` |
 | 6 | **Smoke test** | Resolves `/pages/<slug>/_bundle`, checks the entry is isolated, fetches and parses each view. | `PRISMEAI_SKIP_SMOKE=true` |
 | 7 | **Version snapshot** | `POST /workspaces/:id/versions`. | `PRISMEAI_SKIP_VERSION_SNAPSHOT=true` |
@@ -473,6 +475,8 @@ All `.env*` files except `.env.example` are gitignored.
 | `PRISMEAI_BUNDLE_SIZE_WARN` / `PRISMEAI_BUNDLE_SIZE_MAX` | no | Per-view size thresholds in bytes (default 1 MB / 4 MB) |
 | `PRISMEAI_FORCE` | no | `true` to bypass conflict detection |
 | `PRISMEAI_SKIP_AUTOMATIONS_SYNC`, `_SOURCE_SYNC`, `_BUNDLE_CLEANUP`, `_SMOKE`, `_VERSION_SNAPSHOT` | no | `true` to skip that step |
+| `PRISMEAI_SKIP_DSUL_IMPORT` | no | `true` to skip the DSUL import: automations then go one by one (new and changed only) |
+| `PRISMEAI_DSUL_PRESERVE_CONFIG` | no | Config keys of `index.yml` kept from the live workspace on import (see `scripts/lib/dsul.mjs`) |
 
 ---
 
