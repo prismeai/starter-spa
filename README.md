@@ -430,7 +430,7 @@ npm run release       # npm run build && npm run deploy
 | 0 | **Conflict detection** | Refuses if the workspace changed since your last pull (`.prismeai/last-pull.json`). No state change. | `--force`, `PRISMEAI_FORCE=true` |
 | 1 | **Automations** | Each POST/PATCH/DELETE of an automation makes the runtime rebuild the whole workspace model, so the deploy writes as few as it can. With the DSUL import on (step 4b), it writes none here: the import creates and updates them in one rebuild. Without it, it POSTs the new ones and PATCHes only those changed since the last deploy. `npm run deploy -- --plan` prints these calls and writes nothing. | `PRISMEAI_SKIP_AUTOMATIONS_SYNC=true` |
 | 2 | **Sources sync** | Uploads `src/`, `prisme.app.json` and the root configs as workspace assets under `src/` (private), where the Builder keeps an app's sources: it opens the same code. Only the files changed since the last sync are uploaded; files removed locally are deleted. | `PRISMEAI_SKIP_SOURCE_SYNC=true` |
-| 3 | **View bundles upload** | Uploads each `dist/<view>.<hash>.js` as a workspace asset, `dist/app/isolated/<view>.<hash>.js`, with the app's sharing (`PRISMEAI_SHARING`). | — |
+| 3 | **View bundles upload** | Uploads each `dist/<view>.<hash>.js` as a workspace asset, `dist/app/isolated/<view>.<hash>.js`, with the app's sharing (`PRISMEAI_SHARING`). With a `security.yml`, the organizations and groups of `authorizations.access.bindings` open the views too. | — |
 | 4 | **Patch workspace config** | Merges into `config.value.bundles[<slug>]`: `format: 'isolated'`, `bundle` (the `app` view) and `views` as relative asset paths, `manifest`, `version`, `name`, `builtAt`, `sharing`, and `mcp` / `agent` when set. Keeps the other keys (`metadata`…), drops `embed` and the legacy `public`. **The live pointer.** | — |
 | 4b | **DSUL import** | Only when the repo has an `index.yml`: zips `index.yml`, `security.yml`, `imports/` and `automations/` and `POST /workspaces/:id/import` (never with `?prune=true`, which would also delete the sources and bundles uploaded above). | `PRISMEAI_SKIP_DSUL_IMPORT=true` |
 | 4c | **Removed automations** | With the DSUL import on, deletes after it the automations the workspace holds and the repo no longer has. | `PRISMEAI_SKIP_AUTOMATIONS_SYNC=true` |
@@ -628,7 +628,7 @@ cmdkey /generic:prismeai-sandbox /user:%USERNAME% /pass
 
 Two recipes ship with the starter:
 
-- **GitHub Actions** — `.github/workflows/deploy.yml`. Triggers on push to `main` (and via manual `workflow_dispatch`). Uses Node 20, caches npm, runs `npm run release`.
+- **GitHub Actions** — `.github/workflows/deploy.yml`. Triggers on push to `main` (and via manual `workflow_dispatch`). Uses Node 20, caches npm, runs `npm run build`, then `npm run deploy` when the `PRISMEAI_API_URL` and `PRISMEAI_WORKSPACE_ID` secrets are set (without them, the job only builds).
 - **GitLab CI** — `.gitlab-ci.yml`. Same shape. Includes commented branch-based env routing (`develop` → staging, `main` → production with manual approval).
 
 ### Setting secrets

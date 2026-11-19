@@ -20,7 +20,8 @@
  *   2. Sync src/* (and prisme.app.json, the root configs) as workspace assets
  *      under src/, where the Builder keeps an app's sources: it opens the same
  *      code your repo holds.
- *   3. Upload each view bundle of dist/ as a public file.
+ *   3. Upload each view bundle of dist/ as a workspace asset, with the app's
+ *      sharing and the bindings of security.yml.
  *   4. PATCH workspace.config.value.bundles[<slug>]: format 'isolated', the
  *      views, the manifest, the MCP endpoint and the agent of the app.
  *   4b. DSUL import: zip index.yml, security.yml, imports/ and automations/ and
@@ -487,11 +488,19 @@ async function syncSourceFiles() {
 // (`app.<hash>.js`): a new build gets new paths, no cache serves an old view.
 // ---------------------------------------------------------------------------
 
+/** Bindings of the workspace access (security.yml), given to the app's views. Undefined: the views keep the platform default. */
+async function readViewBindings() {
+  const sec = yaml.load(await readFile(path.join(ROOT, 'security.yml'), 'utf8').catch(() => '')) || {}
+  const bindings = sec?.authorizations?.access?.bindings
+  return Array.isArray(bindings) && bindings.length > 0 ? bindings : undefined
+}
+
 async function uploadViews({ sharing }) {
   const raw = await readFile(path.join(DIST, 'manifest.json'), 'utf8').catch(() =>
     fail('dist/manifest.json not found: run `npm run build` first.')
   )
   const { manifest, views } = JSON.parse(raw)
+  const viewBindings = await readViewBindings()
   console.log(`→ Uploading ${views.length} view bundle${views.length > 1 ? 's' : ''} (sharing: ${sharing})`)
   const paths = {}
   for (const view of views) {
@@ -501,6 +510,9 @@ async function uploadViews({ sharing }) {
     fd.append('file', new Blob([code], { type: 'application/javascript' }), view.fileName)
     fd.append('path', assetPath)
     fd.append('sharing', sharing)
+    // The organizations and groups the workspace is shared with (security.yml,
+    // authorizations.access.bindings) also open the app's views.
+    if (viewBindings) fd.append('bindings', JSON.stringify(viewBindings))
     const res = await api('POST', `/workspaces/${PRISMEAI_WORKSPACE_ID}/assets`, { body: fd })
     if (!Array.isArray(res) || res[0]?.path !== assetPath) {
       fail(`Upload of the "${view.name}" view failed. Check that the token has write access to the workspace (and that the platform serves workspace assets).`)
