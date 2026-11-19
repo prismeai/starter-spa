@@ -15,6 +15,10 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    env:
+      # Without the secrets (the starter itself, a fresh fork), the job only
+      # builds: the deploy step is skipped instead of failing.
+      HAS_DEPLOY_SECRETS: ${{ secrets.PRISMEAI_API_URL != '' && secrets.PRISMEAI_WORKSPACE_ID != '' }}
 
     steps:
       - uses: actions/checkout@v6
@@ -26,7 +30,13 @@ jobs:
 
       - run: npm ci
 
-      - run: npm run release
+      - run: npm run build
+
+      - if: env.HAS_DEPLOY_SECRETS != 'true'
+        run: echo "::notice::PRISMEAI_API_URL / PRISMEAI_WORKSPACE_ID secrets not set, deploy skipped (build only)."
+
+      - if: env.HAS_DEPLOY_SECRETS == 'true'
+        run: npm run deploy
         env:
           # Set these in repo Settings → Secrets and variables → Actions:
           PRISMEAI_API_URL: ${{ secrets.PRISMEAI_API_URL }}

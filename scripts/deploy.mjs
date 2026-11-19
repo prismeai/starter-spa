@@ -5,13 +5,33 @@
  * Mirrors the Builder's Deploy button for an isolated app (useAppBuild):
  *
  *   0. Format guard: refuses to replace an app deployed in the shared format.
- *   1. Sync automations/*.yml into the workspace.
+ *   1. Automations. Each POST/PATCH/DELETE of an automation rebuilds the whole
+ *      runtime model, so:
+ *      - DSUL import on (index.yml present, PRISMEAI_SKIP_DSUL_IMPORT unset):
+ *        no POST nor PATCH, the import (step 4b) creates and updates them.
+ *        Automations the workspace holds and the repo no longer has are
+ *        deleted one by one AFTER the import (step 4c), so none is removed
+ *        while still called.
+ *      - DSUL import off: POST the new ones, PATCH only those changed since the
+ *        last deploy (local content hash or remote checksum, recorded in
+ *        .prismeai/last-pull.json), DELETE the removed ones.
+ *      `--plan` prints these calls (and the count of the previous script) and
+ *      exits without writing anything.
  *   2. Sync src/* (and prisme.app.json, the root configs) as workspace assets
  *      under src/, where the Builder keeps an app's sources: it opens the same
  *      code your repo holds.
- *   3. Upload each view bundle of dist/ as a public file.
+ *   3. Upload each view bundle of dist/ as a workspace asset, with the app's
+ *      sharing and the bindings of security.yml.
  *   4. PATCH workspace.config.value.bundles[<slug>]: format 'isolated', the
  *      views, the manifest, the MCP endpoint and the agent of the app.
+ *   4b. DSUL import: zip index.yml, security.yml, imports/ and automations/ and
+ *      POST /workspaces/:id/import (config keys written at runtime, such as
+ *      bundles and agent.id, are taken from the live workspace first). The
+ *      platform then emits workspaces.imported (auto-init). Skipped when there
+ *      is no index.yml, or with PRISMEAI_SKIP_DSUL_IMPORT=true. Never with
+ *      ?prune=true: it would also delete the assets absent from the archive
+ *      (src/ sources and view bundles uploaded above).
+ *   4c. Delete the automations removed from the repo (DSUL import on only).
  *   5. Clean up bundle files no app points at, smoke-test, snapshot a version.
  *
  * Required env (.env at repo root):
@@ -37,7 +57,10 @@ import { execSync } from 'node:child_process'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import yaml from 'js-yaml'
+import { zipSync, strToU8 } from 'fflate'
+import { mergeIndex, parsePreserve, isDsulFile } from './lib/dsul.mjs'
 import { ISOLATED_FOLDER, VIEW_FILE, appSharing, assetVersion, diffSources, fromSourceAssetPath, isolatedEntry, referencedFiles, toSourceAssetPath, SOURCES_FOLDER } from './lib/isolated.mjs'
+import { callCounts, contentHash, planAutomations } from './lib/automations.mjs'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const ROOT = path.resolve(__dirname, '..')
@@ -82,8 +105,10 @@ const SKIP_VERSION_SNAPSHOT = process.env.PRISMEAI_SKIP_VERSION_SNAPSHOT === 'tr
 const SKIP_AUTOMATIONS_SYNC = process.env.PRISMEAI_SKIP_AUTOMATIONS_SYNC === 'true'
 const SKIP_BUNDLE_CLEANUP = process.env.PRISMEAI_SKIP_BUNDLE_CLEANUP === 'true'
 const SKIP_SMOKE = process.env.PRISMEAI_SKIP_SMOKE === 'true'
+const SKIP_DSUL_IMPORT = process.env.PRISMEAI_SKIP_DSUL_IMPORT === 'true'
 const ALLOW_FORMAT_SWITCH = process.env.PRISMEAI_ALLOW_FORMAT_SWITCH === 'true'
 const FORCE = process.argv.includes('--force') || process.env.PRISMEAI_FORCE === 'true'
+const PLAN_ONLY = process.argv.includes('--plan')
 
 // fail() throws so the top-level try/catch can print a deploy summary + recovery
 // guidance before exiting non-zero. Don't call process.exit() directly here.
@@ -344,8 +369,20 @@ function automationBody(local) {
   return body
 }
 
-function stableHash(obj) {
-  return sha256(JSON.stringify(obj, Object.keys(obj).sort()))
+/** Whether this deploy runs the DSUL import (step 4b), which then carries the automations. */
+const DSUL_IMPORT = !SKIP_DSUL_IMPORT && existsSync(path.join(ROOT, 'index.yml'))
+
+// Content hash of each local automation, recorded in the manifest after a
+// deploy: the next one (DSUL import off) PATCHes only what changed.
+let automationHashes = {}
+// Automations to delete after the DSUL import (step 4c).
+let pendingDeletes = []
+
+async function automationPlan() {
+  const locals = (await collectLocalAutomations()).map((local) => ({ local, slug: local.slug, hash: contentHash(automationBody(local)) }))
+  const ws = await api('GET', `/workspaces/${PRISMEAI_WORKSPACE_ID}`)
+  const plan = planAutomations({ locals, remote: ws?.automations || {}, manifest: await readManifest(), dsulImport: DSUL_IMPORT })
+  return { locals, plan }
 }
 
 async function syncAutomations() {
@@ -354,52 +391,44 @@ async function syncAutomations() {
     return
   }
 
-  const locals = await collectLocalAutomations()
+  const { locals, plan } = await automationPlan()
+  automationHashes = Object.fromEntries(locals.map((l) => [l.slug, l.hash]))
   if (locals.length === 0) {
-    const dirExists = await stat(AUTOMATIONS_DIR).catch(() => null)
-    if (!dirExists) {
-      console.log('· no automations/ directory — skipping')
-      return
-    }
-    console.log('· automations/ is empty — skipping')
+    console.log(`· ${existsSync(AUTOMATIONS_DIR) ? 'automations/ is empty' : 'no automations/ directory'} — skipping`)
     return
   }
 
-  console.log(`→ Syncing ${locals.length} automations`)
-
-  // The /workspaces/:id endpoint returns SUMMARY automations (no `do`/`output`),
-  // so we use it only to know which slugs exist. For the actual diff we'd need
-  // per-slug GETs — too many round-trips to be worth it for typical workspace
-  // sizes. We always PATCH when the slug exists; POST when new. PATCH is
-  // idempotent so the worst case is a no-op write.
-  const ws = await api('GET', `/workspaces/${PRISMEAI_WORKSPACE_ID}`)
-  const remoteSlugs = new Set(Object.keys(ws?.automations || {}))
-
-  let created = 0, updated = 0, deleted = 0
-  const localSlugs = new Set()
-
-  for (const local of locals) {
-    localSlugs.add(local.slug)
-    const body = automationBody(local)
-
-    if (!remoteSlugs.has(local.slug)) {
-      await api('POST', `/workspaces/${PRISMEAI_WORKSPACE_ID}/automations`, { body })
-      created++
-    } else {
-      await api('PATCH', `/workspaces/${PRISMEAI_WORKSPACE_ID}/automations/${encodeURIComponent(local.slug)}`, { body })
-      updated++
-    }
+  if (DSUL_IMPORT) {
+    // One model rebuild (the import) instead of one per automation.
+    pendingDeletes = plan.remove
+    console.log(`→ ${locals.length} automations: created and updated by the DSUL import; ${plan.remove.length} to delete after it`)
+    return
   }
 
-  for (const remoteSlug of remoteSlugs) {
-    if (!localSlugs.has(remoteSlug)) {
-      console.log(`  ⚠ deleting remote automation not present locally: ${remoteSlug}`)
-      await api('DELETE', `/workspaces/${PRISMEAI_WORKSPACE_ID}/automations/${encodeURIComponent(remoteSlug)}`)
-      deleted++
-    }
+  console.log(`→ Syncing automations: ${plan.create.length} new, ${plan.update.length} changed, ${plan.unchanged.length} unchanged, ${plan.remove.length} removed`)
+  const bySlug = new Map(locals.map((l) => [l.slug, l.local]))
+  for (const slug of plan.create) {
+    await api('POST', `/workspaces/${PRISMEAI_WORKSPACE_ID}/automations`, { body: automationBody(bySlug.get(slug)) })
   }
+  for (const slug of plan.update) {
+    await api('PATCH', `/workspaces/${PRISMEAI_WORKSPACE_ID}/automations/${encodeURIComponent(slug)}`, { body: automationBody(bySlug.get(slug)) })
+  }
+  for (const slug of plan.remove) {
+    console.log(`  ⚠ deleting remote automation not present locally: ${slug}`)
+    await api('DELETE', `/workspaces/${PRISMEAI_WORKSPACE_ID}/automations/${encodeURIComponent(slug)}`)
+  }
+  console.log(`  created=${plan.create.length} updated=${plan.update.length} deleted=${plan.remove.length}`)
+}
 
-  console.log(`  created=${created} updated=${updated} deleted=${deleted}`)
+// 4c. After the DSUL import: delete, one by one, the automations removed from the repo.
+async function deleteRemovedAutomations() {
+  if (!DSUL_IMPORT || SKIP_AUTOMATIONS_SYNC || status.dsul !== 'done') { mark('prune', 'skipped'); return }
+  if (!pendingDeletes.length) { console.log('· no removed automation to delete'); return }
+  console.log(`→ Deleting ${pendingDeletes.length} automation(s) removed from the repo`)
+  for (const slug of pendingDeletes) {
+    console.log(`  ⚠ deleting remote automation not present locally: ${slug}`)
+    await api('DELETE', `/workspaces/${PRISMEAI_WORKSPACE_ID}/automations/${encodeURIComponent(slug)}`)
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -459,11 +488,19 @@ async function syncSourceFiles() {
 // (`app.<hash>.js`): a new build gets new paths, no cache serves an old view.
 // ---------------------------------------------------------------------------
 
+/** Bindings of the workspace access (security.yml), given to the app's views. Undefined: the views keep the platform default. */
+async function readViewBindings() {
+  const sec = yaml.load(await readFile(path.join(ROOT, 'security.yml'), 'utf8').catch(() => '')) || {}
+  const bindings = sec?.authorizations?.access?.bindings
+  return Array.isArray(bindings) && bindings.length > 0 ? bindings : undefined
+}
+
 async function uploadViews({ sharing }) {
   const raw = await readFile(path.join(DIST, 'manifest.json'), 'utf8').catch(() =>
     fail('dist/manifest.json not found: run `npm run build` first.')
   )
   const { manifest, views } = JSON.parse(raw)
+  const viewBindings = await readViewBindings()
   console.log(`→ Uploading ${views.length} view bundle${views.length > 1 ? 's' : ''} (sharing: ${sharing})`)
   const paths = {}
   for (const view of views) {
@@ -473,6 +510,9 @@ async function uploadViews({ sharing }) {
     fd.append('file', new Blob([code], { type: 'application/javascript' }), view.fileName)
     fd.append('path', assetPath)
     fd.append('sharing', sharing)
+    // The organizations and groups the workspace is shared with (security.yml,
+    // authorizations.access.bindings) also open the app's views.
+    if (viewBindings) fd.append('bindings', JSON.stringify(viewBindings))
     const res = await api('POST', `/workspaces/${PRISMEAI_WORKSPACE_ID}/assets`, { body: fd })
     if (!Array.isArray(res) || res[0]?.path !== assetPath) {
       fail(`Upload of the "${view.name}" view failed. Check that the token has write access to the workspace (and that the platform serves workspace assets).`)
@@ -518,6 +558,50 @@ async function patchWorkspaceConfig({ views, manifest, ws, slug, sharing }) {
       },
     },
   })
+}
+
+// ---------------------------------------------------------------------------
+// 4b. DSUL import (index.yml, security.yml, imports/, automations/)
+//
+// See scripts/lib/dsul.mjs. Runs after the config PATCH, reading the live
+// config right before zipping, so the app pointer just written (bundles) and
+// the ids written by the workspace at runtime (agent.id) are kept.
+// ---------------------------------------------------------------------------
+
+async function walkDsul(dir, rel = '') {
+  const out = []
+  for (const entry of await readdir(dir, { withFileTypes: true })) {
+    const r = rel ? `${rel}/${entry.name}` : entry.name
+    if (entry.isDirectory()) {
+      if (['node_modules', 'dist', 'src', 'scripts', 'vendor', '.git', '.prismeai', 'docs'].includes(entry.name) && !rel) continue
+      out.push(...(await walkDsul(path.join(dir, entry.name), r)))
+    } else if (isDsulFile(r)) out.push(r)
+  }
+  return out
+}
+
+async function importDsul() {
+  if (SKIP_DSUL_IMPORT) { console.log('· DSUL import skipped (PRISMEAI_SKIP_DSUL_IMPORT=true)'); mark('dsul', 'skipped'); return }
+  if (!existsSync(path.join(ROOT, 'index.yml'))) { console.log('· no index.yml, DSUL import skipped'); mark('dsul', 'skipped'); return }
+  console.log('→ Importing DSUL (index.yml, security.yml, imports/, automations/)')
+  const live = await api('GET', `/workspaces/${PRISMEAI_WORKSPACE_ID}`)
+  const local = yaml.load(await readFile(path.join(ROOT, 'index.yml'), 'utf8'))
+  const { index, kept } = mergeIndex(local, live, parsePreserve(process.env.PRISMEAI_DSUL_PRESERVE_CONFIG), PRISMEAI_WORKSPACE_ID)
+  const files = {}
+  for (const rel of await walkDsul(ROOT)) {
+    // The platform reads archives with one top folder (as its own exports).
+    files[`workspace/${rel}`] = rel === 'index.yml'
+      ? strToU8(yaml.dump(index, { lineWidth: -1, quotingType: "'" }))
+      : new Uint8Array(await readFile(path.join(ROOT, rel)))
+  }
+  const zip = zipSync(files)
+  const fd = new FormData()
+  fd.append('archive', new Blob([zip], { type: 'application/zip' }), 'workspace.zip')
+  const res = await api('POST', `/workspaces/${PRISMEAI_WORKSPACE_ID}/import`, { body: fd })
+  const errors = res?.errors || []
+  console.log(`✓ imported ${Object.keys(files).length} file(s)${kept.length ? `, kept live ${kept.join(', ')}` : ''}`)
+  for (const w of res?.warnings || []) console.warn(`  ⚠ ${w.message || JSON.stringify(w)}`)
+  if (errors.length) fail(`DSUL import reported ${errors.length} error(s):\n` + errors.map(e => `  ✗ ${e.filepath || ''} ${e.message || JSON.stringify(e)}`).join('\n'))
 }
 
 // ---------------------------------------------------------------------------
@@ -628,6 +712,9 @@ async function refreshManifest(sourceHashes) {
     sourceFiles: {},
     // Content hash of each source as last synced: the next deploy uploads only what changed.
     sourceHashes: sourceHashes && Object.keys(sourceHashes).length ? sourceHashes : previous.sourceHashes || {},
+    // Content hash of each automation as last deployed: with the DSUL import
+    // off, the next deploy PATCHes only what changed.
+    automationHashes: Object.keys(automationHashes).length ? automationHashes : previous.automationHashes || {},
   }
   for (const slug of Object.keys(ws?.automations || {})) {
     manifest.automations[slug] = ws.automations[slug]?.checksum
@@ -678,10 +765,12 @@ warnIfEnvTracked()
 // happened and what the user should do next.
 const steps = [
   { key: 'conflict',    label: 'Conflict detection' },
-  { key: 'automations', label: 'Automations sync' },
+  { key: 'automations', label: DSUL_IMPORT ? 'Automations plan (carried by the DSUL import)' : 'Automations sync (new and changed only)' },
   { key: 'source',      label: 'Source files sync' },
   { key: 'bundle',      label: 'View bundles upload' },
   { key: 'config',      label: 'Workspace config PATCH (live pointer)' },
+  { key: 'dsul',        label: 'DSUL import (index.yml, security.yml, imports/, automations/)' },
+  { key: 'prune',       label: 'Delete automations removed from the repo (after the import)' },
   { key: 'cleanup',     label: 'Orphan bundle cleanup' },
   { key: 'smoke',       label: 'Smoke test (isolated entry, views load)' },
   { key: 'version',     label: 'Version snapshot' },
@@ -701,10 +790,14 @@ function printSummary() {
 // version. After it, the new version is live.
 const RECOVERY = {
   conflict:    'No state changed. Either run `npm run pull` to fetch remote changes, or use --force to override.',
-  automations: 'Some automations may have been pushed before the failure. The live UI is unaffected. Re-run `npm run deploy` to retry (PATCHes are idempotent).',
+  automations: DSUL_IMPORT
+    ? 'Nothing was written (with the DSUL import, this step only reads the workspace). Re-run `npm run deploy`.'
+    : 'Some automations may have been pushed before the failure. The live UI is unaffected. Re-run `npm run deploy` to retry (PATCHes are idempotent).',
   source:      'Some source files may have been uploaded. The live UI is unaffected. Re-run `npm run deploy` — differential sync will only push what changed.',
   bundle:      'A view upload failed. End users still see the previous version. Re-run `npm run deploy`.',
   config:      'CRITICAL: bundle was uploaded but workspace config was NOT updated. The new bundle is orphaned; end users still see the OLD version. Re-run `npm run deploy` — a new bundle upload will succeed and the config patch will retry.',
+  dsul:        'The app is live, but index.yml / security.yml / imports/ / automations/ were not imported: the automations, the workspace config, its installed apps and its auto-init may be stale. Fix the reported file and re-run `npm run deploy`.',
+  prune:       'The import succeeded; some automations removed from the repo are still in the workspace. Re-run `npm run deploy` to delete them.',
   cleanup:     'Deploy SUCCEEDED — the live UI is updated to the new bundle. Cleanup of orphan bundle files failed but is non-critical (will retry next deploy).',
   smoke:       'Bundle is live but the smoke test failed — the bundle may be syntactically broken or reference a missing external. End users will see a "Failed to load bundle" error. Run `npm run undeploy` to roll back, OR fix the bundle and re-deploy.',
   version:     'Deploy SUCCEEDED — the live UI is updated. Version snapshot failed; you may not have a rollback point for this release.',
@@ -744,6 +837,24 @@ try {
   process.exit(1)
 }
 
+// --plan: print the automation calls this deploy would make, then exit (reads only).
+if (PLAN_ONLY) {
+  try {
+    const { locals, plan } = await automationPlan()
+    const { before, after } = callCounts({ locals, plan })
+    console.log(`DSUL import: ${DSUL_IMPORT ? 'on' : 'off'}; ${locals.length} local automations`)
+    console.log(`  POST   ${plan.create.length}${plan.create.length ? ` (${plan.create.join(', ')})` : ''}`)
+    console.log(`  PATCH  ${plan.update.length}${plan.update.length ? ` (${plan.update.join(', ')})` : ''}`)
+    console.log(`  DELETE ${plan.remove.length}${plan.remove.length ? ` (${plan.remove.join(', ')})` : ''}${DSUL_IMPORT ? ', after the import' : ''}`)
+    if (DSUL_IMPORT) console.log('  + 1 POST /import (creates and updates the automations)')
+    console.log(`Automation calls: ${after} (previous script: ${before})`)
+    process.exit(0)
+  } catch (err) {
+    console.error(`✗ ${err?.message || err}`)
+    process.exit(1)
+  }
+}
+
 let exitCode = 0
 let slug
 
@@ -759,7 +870,9 @@ try {
 
 
   await patchWorkspaceConfig({ views, manifest, ws, slug, sharing });  mark('config', 'done')
-  await cleanupOrphanBundles();        mark('cleanup', SKIP_BUNDLE_CLEANUP ? 'skipped' : 'done')
+  await importDsul();                  mark('dsul', status.dsul === 'pending' ? 'done' : status.dsul)
+  await deleteRemovedAutomations();    mark('prune', status.prune === 'pending' ? 'done' : status.prune)
+  await cleanupOrphanBundles();       mark('cleanup', SKIP_BUNDLE_CLEANUP ? 'skipped' : 'done')
   await smokeTest({ slug });           mark('smoke', SKIP_SMOKE ? 'skipped' : 'done')
   await versionSnapshot();             mark('version', SKIP_VERSION_SNAPSHOT ? 'skipped' : 'done')
   await refreshManifest(sourceHashes)  // refresh .prismeai/last-pull.json so subsequent deploys aren't blocked
