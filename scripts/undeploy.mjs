@@ -10,7 +10,7 @@
  * Usage:
  *   npm run undeploy                  # remove bundles[<workspace.slug>]
  *   npm run undeploy -- --slug=foo    # remove bundles[foo]
- *   npm run undeploy -- --purge-files # also DELETE the bundle/embed files
+ *   npm run undeploy -- --purge-files # also DELETE the app's view files
  *
  * Required env: same as deploy.mjs (PRISMEAI_API_URL, PRISMEAI_ACCESS_TOKEN,
  * PRISMEAI_WORKSPACE_ID). Multi-env supported via --env=<name>.
@@ -84,7 +84,7 @@ if (!target) {
 
 console.log(`→ Removing bundles[${slug}]`)
 console.log(`  bundle was: ${target.bundle}`)
-if (target.embed) console.log(`  embed was:  ${target.embed}`)
+for (const [name, url] of Object.entries(target.views ?? {})) if (url !== target.bundle) console.log(`  view ${name}: ${url}`)
 
 const newBundles = { ...existingBundles }
 delete newBundles[slug]
@@ -96,12 +96,12 @@ await api('PATCH', `/workspaces/${PRISMEAI_WORKSPACE_ID}`, {
 console.log(`✓ Workspace config updated. /apps/${slug} no longer serves a bundle.`)
 
 if (PURGE) {
-  console.log(`→ Purging bundle/embed files`)
+  console.log(`→ Purging the app's bundle files`)
   const list = await api('GET', `/workspaces/${PRISMEAI_WORKSPACE_ID}/files?limit=1000`)
   const files = Array.isArray(list) ? list : list?.result || []
   const toDelete = files.filter(f =>
     f.public === true &&
-    (f.url === target.bundle || (target.embed && f.url === target.embed))
+    (f.url === target.bundle || (target.embed && f.url === target.embed) || Object.values(target.views ?? {}).includes(f.url))
   )
   for (const f of toDelete) {
     await api('DELETE', `/workspaces/${PRISMEAI_WORKSPACE_ID}/files/${encodeURIComponent(f.id)}`)
@@ -110,6 +110,6 @@ if (PURGE) {
   console.log(`✓ Purged ${toDelete.length} file(s)`)
 } else {
   console.log()
-  console.log(`Note: bundle/embed files NOT deleted (run with --purge-files to also remove them).`)
+  console.log(`Note: bundle files NOT deleted (run with --purge-files to also remove them).`)
   console.log(`The orphan-bundle cleanup at next \`npm run deploy\` will remove them automatically.`)
 }

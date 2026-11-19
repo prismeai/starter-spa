@@ -1,0 +1,162 @@
+slug: mcp
+name: MCP
+description: 'MCP server of the app (JSON-RPC 2.0): tools/list, tools/call, resources/read (the hello-card view the hello tool shows in the chat). The app and the agents call it as the signed-in user; anonymous callers get 401 (_auth).'
+when:
+  endpoint: true
+do:
+  - _auth:
+      output: auth
+  - conditions:
+      '{{auth.error}}':
+        - set:
+            name: $http
+            value:
+              status: '{{auth.status}}'
+        - set:
+            name: output
+            value:
+              jsonrpc: '2.0'
+              id: '{{body.id}}'
+              error:
+                code: -32001
+                message: '{{auth.message}}'
+        - break:
+            scope: automation
+  - conditions:
+      '{{body.method}} == "initialize"':
+        - set:
+            name: output
+            value:
+              jsonrpc: '2.0'
+              id: '{{body.id}}'
+              result:
+                protocolVersion: '2025-06-18'
+                capabilities:
+                  tools: {}
+                  resources: {}
+                serverInfo:
+                  name: app
+                  version: 1.0.0
+      '{{body.method}} == "tools/list"':
+        - set:
+            name: output
+            value:
+              jsonrpc: '2.0'
+              id: '{{body.id}}'
+              result:
+                tools:
+                  - name: hello
+                    description: Says hello
+                    inputSchema:
+                      type: object
+                      properties:
+                        name:
+                          type: string
+                    _meta:
+                      ui:
+                        resourceUri: ui://app/hello-card
+                        visibility:
+                          - model
+                          - app
+      '{{body.method}} == "tools/call" and {{body.params.name}} == "hello"':
+        - set:
+            name: output
+            value:
+              jsonrpc: '2.0'
+              id: '{{body.id}}'
+              result:
+                content:
+                  - type: text
+                    text: Hello {{body.params.arguments.name}}!
+      '{{body.method}} == "resources/read" and {{body.params.uri}} == "ui://app/hello-card"':
+        - comment: The view of the hello tool. npm run deploy writes its bundle path in bundles[<slug>].views; the first app of the workspace that has the view serves it.
+        - set:
+            name: _view
+            value: hello-card
+        - repeat:
+            'on': '{{config.bundles}}'
+            do:
+              - conditions:
+                  '{{item.value.views[{{_view}}]}} and !{{_view_path}}':
+                    - set:
+                        name: _view_path
+                        value: '{{item.value.views[{{_view}}]}}'
+        - conditions:
+            '!{{_view_path}}':
+              - set:
+                  name: output
+                  value:
+                    jsonrpc: '2.0'
+                    id: '{{body.id}}'
+                    error:
+                      code: -32002
+                      message: 'View not deployed: run npm run release'
+              - break:
+                  scope: automation
+            '{{_view_path}} matches regex("^assets/")':
+              - set:
+                  name: _view_url
+                  value: '{{global.apiUrl}}/workspaces/{{global.workspaceId}}/{{_view_path}}'
+            default:
+              - set:
+                  name: _view_url
+                  value: '{{_view_path}}'
+        - comment: 'Read here, with the caller''s identity: the view keeps the app''s sharing, and a user who cannot open the app gets no view. The chat''s frame could not read a private file itself.'
+        - fetch:
+            url: '{{_view_url}}'
+            method: GET
+            outputMode: base64
+            emitErrors: false
+            output: _view_code
+        - conditions:
+            '!{{_view_code}} or {{_view_code.error}}':
+              - comment: '403 and reason auth: the chat shows the tool''s text result instead of the view, with nothing to retry.'
+              - set:
+                  name: $http
+                  value:
+                    status: 403
+              - set:
+                  name: output
+                  value:
+                    jsonrpc: '2.0'
+                    id: '{{body.id}}'
+                    error:
+                      code: -32002
+                      message: View not available to this user
+                      data:
+                        reason: auth
+              - break:
+                  scope: automation
+        - comment: 'The page holds the code: nothing for the frame to download, no domain to allow. An inline script decodes and runs it (the chat allows inline scripts, not eval).'
+        - set:
+            name: output
+            value:
+              jsonrpc: '2.0'
+              id: '{{body.id}}'
+              result:
+                contents:
+                  - uri: ui://app/hello-card
+                    mimeType: text/html;profile=mcp-app
+                    text: <!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><style>html,body{margin:0;background:transparent}</style></head><body><div id="root"></div><script>(function(){var b=atob("{{_view_code}}"),u=new Uint8Array(b.length);for(var i=0;i<b.length;i++)u[i]=b.charCodeAt(i);var s=document.createElement("script");s.textContent=new TextDecoder().decode(u);document.body.appendChild(s)})()</script></body></html>
+                    _meta:
+                      ui:
+                        prefersBorder: false
+      '{{body.method}} matches regex("^notifications/")':
+        - comment: Notifications (notifications/initialized…) expect no answer.
+        - set:
+            name: $http
+            value:
+              status: 202
+        - set:
+            name: output
+            value: ''
+      default:
+        - set:
+            name: output
+            value:
+              jsonrpc: '2.0'
+              id: '{{body.id}}'
+              error:
+                code: -32601
+                message: 'Method not found: {{body.method}}'
+output: '{{output}}'
